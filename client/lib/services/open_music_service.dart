@@ -336,7 +336,7 @@ class OpenMusicService {
   Future<Map<String, dynamic>> _getMap(Uri uri) async {
     final response = await _client.get(uri, headers: const {
       'user-agent':
-          'langbai-resolver/1.0.3 (https://github.com/2786886095/langbai-resolver)',
+          'langbai-resolver/1.0.4 (https://github.com/2786886095/langbai-resolver)',
     }).timeout(const Duration(seconds: 25));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenMusicException('音乐来源返回 ${response.statusCode}');

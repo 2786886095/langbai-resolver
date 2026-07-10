@@ -42,7 +42,7 @@ class LocalMediaService {
       }
       return MediaInfo.fromJson(json);
     } on PlatformException catch (error) {
-      throw LocalMediaException(error.message ?? '手机本地解析失败');
+      throw LocalMediaException(_cleanLocalError(error.message ?? '手机本地解析失败'));
     } on MissingPluginException {
       throw const LocalMediaException('当前安装包没有包含手机本地解析器');
     }
@@ -72,7 +72,7 @@ class LocalMediaService {
         path: json['path']?.toString(),
       );
     } on PlatformException catch (error) {
-      throw LocalMediaException(error.message ?? '手机本地下载失败');
+      throw LocalMediaException(_cleanLocalError(error.message ?? '手机本地下载失败'));
     } finally {
       _progressListeners.remove(processId);
     }
@@ -87,7 +87,7 @@ class LocalMediaService {
       }
       return '最新版本';
     } on PlatformException catch (error) {
-      throw LocalMediaException(error.message ?? '本地解析器更新失败');
+      throw LocalMediaException(_cleanLocalError(error.message ?? '本地解析器更新失败'));
     }
   }
 
@@ -120,4 +120,15 @@ Object? _normalize(Object? value) {
   }
   if (value is List) return value.map(_normalize).toList(growable: false);
   return value;
+}
+
+String _cleanLocalError(String value) {
+  final withoutAnsi = value.replaceAll(
+    RegExp(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])'),
+    '',
+  );
+  return withoutAnsi
+      .replaceFirst(RegExp(r'^(?:\s*ERROR:\s*)+', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
 }

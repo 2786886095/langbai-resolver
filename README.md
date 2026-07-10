@@ -16,6 +16,8 @@
 
 > 网站接口、登录策略和风控会变化，因此无法承诺“所有网站永久适配”。是否支持应以实际链接测试为准。项目只处理公开、无 DRM 且用户有权保存的内容，不绕过付费、私密、地区限制或访问控制。需要登录的平台只有在用户主动启用后才读取本机浏览器 Cookie。
 
+抖音提示需要新鲜 Cookie 时，Windows 客户端会先征求本机读取权限，再依次尝试 Edge、Chrome 和 Firefox 并自动重试；Cookie 不会上传。若浏览器尚未生成所需 Cookie，请先在浏览器打开该链接并正常播放一次。
+
 ## 目录
 
 ```text
@@ -52,7 +54,7 @@ Windows Setup（需要 Flutter、Visual Studio C++ 桌面工作负载和 Inno Se
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.0.3" `
+  -Version "1.0.4" `
   -UpdateManifestUrl "https://github.com/你的账号/langbai-resolver/releases/latest/download/update-manifest.json"
 ```
 
@@ -76,7 +78,7 @@ UPDATE_MANIFEST_URL="https://github.com/你的账号/langbai-resolver/releases/l
 
 ## GitHub Release 与自动更新
 
-推送 `v1.0.3` 形式的标签，`release.yml` 会自动生成并发布：
+推送 `v1.0.4` 形式的标签，`release.yml` 会自动生成并发布：
 
 - `langbai-resolver-Setup.exe`
 - `langbai-resolver-Android.apk`
