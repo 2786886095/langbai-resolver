@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/media_models.dart';
 import '../services/api_client.dart';
+import '../services/bilibili_auth_service.dart';
 import '../services/download_saver.dart';
 import '../services/link_detector.dart';
 import '../services/local_media_service.dart';
@@ -46,8 +48,16 @@ class _ParserPageState extends State<ParserPage> {
   bool _saving = false;
   double _saveProgress = 0;
   String? _error;
+  BilibiliAccount? _bilibiliAccount;
+  bool _bilibiliAuthBusy = false;
 
   bool get _usesLocalParser => LocalMediaService.isSupported;
+  bool get _bilibiliLoginAvailable {
+    if (!BilibiliAuthService.isSupported) return false;
+    if (_usesLocalParser) return true;
+    final host = Uri.tryParse(_api.baseUrl)?.host.toLowerCase();
+    return host == '127.0.0.1' || host == 'localhost' || host == '::1';
+  }
 
   @override
   void initState() {
@@ -59,10 +69,50 @@ class _ParserPageState extends State<ParserPage> {
 
   Future<void> _initialize() async {
     await _restoreApiUrl();
+    await _restoreBilibiliAccount();
     final initialUrl = widget.initialUrl?.trim();
     if (!mounted || initialUrl == null || initialUrl.isEmpty) return;
     _urlController.text = initialUrl;
     await _resolve();
+  }
+
+  Future<void> _restoreBilibiliAccount() async {
+    if (!_bilibiliLoginAvailable) return;
+    try {
+      final account = await BilibiliAuthService.instance.restore();
+      if (mounted) setState(() => _bilibiliAccount = account);
+    } on Object {
+      // Manual QR login remains available when secure storage is temporarily unavailable.
+    }
+  }
+
+  bool _isBilibiliUrl(String value) {
+    final host = Uri.tryParse(value)?.host.toLowerCase() ?? '';
+    return host == 'b23.tv' ||
+        host == 'bilibili.com' ||
+        host.endsWith('.bilibili.com');
+  }
+
+  Future<void> _showBilibiliLogin() async {
+    if (_bilibiliAuthBusy) return;
+    setState(() => _bilibiliAuthBusy = true);
+    try {
+      final account = await showDialog<BilibiliAccount>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const _BilibiliLoginDialog(),
+      );
+      if (mounted && account != null) {
+        setState(() => _bilibiliAccount = account);
+      }
+    } finally {
+      if (mounted) setState(() => _bilibiliAuthBusy = false);
+    }
+  }
+
+  Future<void> _logoutBilibili() async {
+    await BilibiliAuthService.instance.logout();
+    if (mounted) setState(() => _bilibiliAccount = null);
   }
 
   Future<void> _restoreApiUrl() async {
@@ -114,9 +164,15 @@ class _ParserPageState extends State<ParserPage> {
       _job = null;
     });
     try {
+      final bilibiliCookie = _bilibiliLoginAvailable && _isBilibiliUrl(url)
+          ? BilibiliAuthService.instance.cookieHeader
+          : null;
       final media = _usesLocalParser
-          ? await LocalMediaService.instance.resolve(url)
-          : await _api.resolve(url);
+          ? await LocalMediaService.instance.resolve(
+              url,
+              bilibiliCookie: bilibiliCookie,
+            )
+          : await _api.resolve(url, bilibiliCookie: bilibiliCookie);
       if (!mounted) return;
       final availableKinds = AssetKind.values
           .where((kind) => media.options.any((option) => option.kind == kind))
@@ -417,6 +473,10 @@ class _ParserPageState extends State<ParserPage> {
               ],
             ),
             const SizedBox(height: 24),
+            if (_bilibiliLoginAvailable) ...[
+              _buildBilibiliAccountCard(context),
+              const SizedBox(height: 18),
+            ],
             LayoutBuilder(
               builder: (context, constraints) {
                 final narrow = constraints.maxWidth < 680;
@@ -473,6 +533,67 @@ class _ParserPageState extends State<ParserPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildBilibiliAccountCard(BuildContext context) {
+    final account = _bilibiliAccount;
+    final loggedIn = BilibiliAuthService.instance.isLoggedIn;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: context.palette.surfaceRaised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: context.palette.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFF6699).withOpacity(.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.tv_rounded, color: Color(0xFFFF6699)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  loggedIn ? account?.name ?? 'B站已登录' : 'B站最高画质',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  loggedIn
+                      ? '${account?.vipLabel?.isNotEmpty == true ? '${account!.vipLabel} · ' : ''}登录会话仅加密保存在本机'
+                      : '扫码登录后解析 1080P、4K、HDR 等账号可见画质',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: context.palette.textMuted,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (loggedIn)
+            TextButton(
+              onPressed: _bilibiliAuthBusy ? null : _logoutBilibili,
+              child: const Text('退出'),
+            )
+          else
+            FilledButton.tonalIcon(
+              onPressed: _bilibiliAuthBusy ? null : _showBilibiliLogin,
+              icon: const Icon(Icons.qr_code_2_rounded),
+              label: const Text('扫码登录'),
+            ),
+        ],
       ),
     );
   }
@@ -873,6 +994,140 @@ class _ProgressPanel extends StatelessWidget {
           LinearProgressIndicator(value: value <= 0 ? null : value),
         ],
       ),
+    );
+  }
+}
+
+class _BilibiliLoginDialog extends StatefulWidget {
+  const _BilibiliLoginDialog();
+
+  @override
+  State<_BilibiliLoginDialog> createState() => _BilibiliLoginDialogState();
+}
+
+class _BilibiliLoginDialogState extends State<_BilibiliLoginDialog> {
+  BilibiliQrSession? _session;
+  Timer? _timer;
+  String _message = '正在生成登录二维码…';
+  bool _loading = true;
+  bool _polling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _createSession();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _createSession() async {
+    _timer?.cancel();
+    setState(() {
+      _loading = true;
+      _message = '正在生成登录二维码…';
+    });
+    try {
+      final session = await BilibiliAuthService.instance.createQrSession();
+      if (!mounted) return;
+      setState(() {
+        _session = session;
+        _loading = false;
+        _message = '请使用手机哔哩哔哩扫码';
+      });
+      _timer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
+    } on Object catch (error) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _message = error.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _poll() async {
+    final session = _session;
+    if (session == null || _polling) return;
+    _polling = true;
+    try {
+      final status = await BilibiliAuthService.instance.poll(session);
+      if (!mounted) return;
+      if (status.state == BilibiliQrState.confirmed) {
+        _timer?.cancel();
+        Navigator.pop(context, BilibiliAuthService.instance.account);
+        return;
+      }
+      if (status.state == BilibiliQrState.expired) _timer?.cancel();
+      setState(() => _message = status.message ?? '请使用手机哔哩哔哩扫码');
+    } on Object catch (error) {
+      if (mounted) setState(() => _message = error.toString());
+    } finally {
+      _polling = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = _session;
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.qr_code_2_rounded, color: Color(0xFFFF6699)),
+          SizedBox(width: 10),
+          Text('B站扫码登录'),
+        ],
+      ),
+      content: SizedBox(
+        width: 300,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_loading)
+              const SizedBox.square(
+                dimension: 220,
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (session != null)
+              Container(
+                width: 228,
+                height: 228,
+                padding: const EdgeInsets.all(4),
+                color: Colors.white,
+                child: QrImageView(
+                  data: session.url,
+                  version: QrVersions.auto,
+                  size: 220,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+            const SizedBox(height: 16),
+            Text(_message, textAlign: TextAlign.center),
+            const SizedBox(height: 8),
+            Text(
+              '会话仅保存在本机加密存储，不上传账号密码。',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: context.palette.textMuted,
+                  ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        TextButton.icon(
+          onPressed: _loading ? null : _createSession,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('刷新二维码'),
+        ),
+      ],
     );
   }
 }

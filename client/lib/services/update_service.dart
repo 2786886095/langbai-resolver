@@ -8,7 +8,7 @@ import 'update_models.dart';
 
 const appVersion = String.fromEnvironment(
   'APP_VERSION',
-  defaultValue: '1.0.6',
+  defaultValue: '1.0.7',
 );
 
 const _configuredManifestUrl = String.fromEnvironment('UPDATE_MANIFEST_URL');

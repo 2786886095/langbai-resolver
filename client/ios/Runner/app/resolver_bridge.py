@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import shutil
+import ssl
+import tempfile
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
 
+import certifi
 import yt_dlp
 
 
@@ -19,8 +24,25 @@ _USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
     "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
 )
+_YTDLP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
+    "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+)
 _HTTP_URL_RE = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
 _TRAILING_SHARE_PUNCTUATION = ")]}>，。！？；：、"
+_CA_BUNDLE = certifi.where()
+os.environ["SSL_CERT_FILE"] = _CA_BUNDLE
+os.environ["REQUESTS_CA_BUNDLE"] = _CA_BUNDLE
+_SSL_CONTEXT = ssl.create_default_context(cafile=_CA_BUNDLE)
+_BILIBILI_COOKIE_NAMES = {
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "sid",
+    "bili_ticket",
+    "bili_ticket_expires",
+}
 
 
 def _text(value: object) -> str | None:
@@ -33,6 +55,53 @@ def _text(value: object) -> str | None:
 def _extract_http_url(value: str) -> str | None:
     match = _HTTP_URL_RE.search(value.strip())
     return match.group(0).rstrip(_TRAILING_SHARE_PUNCTUATION) if match else None
+
+
+def _is_bilibili_url(value: str) -> bool:
+    host = (urllib.parse.urlparse(value).hostname or "").lower()
+    return host in {"bilibili.com", "b23.tv"} or host.endswith(".bilibili.com")
+
+
+def _normalize_bilibili_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if (parsed.hostname or "").lower() in {"m.bilibili.com", "bilibili.com"}:
+        return urllib.parse.urlunparse(parsed._replace(netloc="www.bilibili.com"))
+    return value
+
+
+def _clean_bilibili_cookie(value: object, url: str) -> str | None:
+    raw = _text(value)
+    if not raw or not _is_bilibili_url(url) or "\r" in raw or "\n" in raw:
+        return None
+    pairs = []
+    for item in raw.split(";"):
+        name, separator, content = item.strip().partition("=")
+        if separator and name in _BILIBILI_COOKIE_NAMES and content:
+            pairs.append(f"{name}={content}")
+    return "; ".join(pairs) if any(x.startswith("SESSDATA=") for x in pairs) else None
+
+
+@contextlib.contextmanager
+def _temporary_bilibili_cookie_file(cookie_header: str | None):
+    if not cookie_header:
+        yield None
+        return
+    descriptor, path = tempfile.mkstemp(prefix="langbai-bilibili-", suffix=".txt")
+    os.close(descriptor)
+    try:
+        lines = ["# Netscape HTTP Cookie File"]
+        expires = 4_102_444_800
+        for item in cookie_header.split(";"):
+            name, separator, content = item.strip().partition("=")
+            if separator and name in _BILIBILI_COOKIE_NAMES:
+                lines.append(
+                    f".bilibili.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{content}"
+                )
+        Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 def _integer(value: object) -> int | None:
@@ -72,6 +141,7 @@ def _option(
     bitrate: int | None = None,
     fps: float | None = None,
     filesize: int | None = None,
+    requires_merge: bool = False,
 ) -> dict[str, object]:
     return {
         "id": option_id,
@@ -83,12 +153,12 @@ def _option(
         "fps": fps,
         "filesize": filesize,
         "filesize_label": _human_bytes(filesize),
-        "requires_merge": False,
+        "requires_merge": requires_merge,
     }
 
 
-def _base_options() -> dict[str, Any]:
-    return {
+def _base_options(cookie_file: str | None = None) -> dict[str, Any]:
+    options = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -96,11 +166,14 @@ def _base_options() -> dict[str, Any]:
         "socket_timeout": 25,
         "retries": 2,
         "extractor_retries": 2,
-        "http_headers": {"User-Agent": _USER_AGENT},
+        "http_headers": {"User-Agent": _YTDLP_USER_AGENT},
         "extractor_args": {
             "youtube": {"player_client": ["ios", "android_vr", "web_safari"]}
         },
     }
+    if cookie_file:
+        options["cookiefile"] = cookie_file
+    return options
 
 
 def _is_douyin_url(value: str) -> bool:
@@ -138,7 +211,9 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
     video_id = _douyin_video_id(url)
     if not video_id:
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(
+            request, timeout=20, context=_SSL_CONTEXT
+        ) as response:
             final_url = response.geturl()
             html = response.read().decode("utf-8", "replace")
         if not _is_douyin_url(final_url):
@@ -152,7 +227,7 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
 
     share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
     request = urllib.request.Request(share_url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(request, timeout=25) as response:
+    with urllib.request.urlopen(request, timeout=25, context=_SSL_CONTEXT) as response:
         html = response.read().decode("utf-8", "replace")
     marker = "window._ROUTER_DATA ="
     marker_index = html.find(marker)
@@ -271,8 +346,11 @@ def resolve(argument: str) -> str:
     if _is_douyin_url(url):
         return json.dumps(_resolve_douyin_share(url), ensure_ascii=False)
 
-    with yt_dlp.YoutubeDL(_base_options()) as ydl:
-        raw = ydl.extract_info(url, download=False)
+    url = _normalize_bilibili_url(url)
+    bilibili_cookie = _clean_bilibili_cookie(request.get("bilibili_cookie"), url)
+    with _temporary_bilibili_cookie_file(bilibili_cookie) as cookie_file:
+        with yt_dlp.YoutubeDL(_base_options(cookie_file)) as ydl:
+            raw = ydl.extract_info(url, download=False)
     if not raw:
         raise RuntimeError("本地解析器没有返回媒体信息")
 
@@ -289,10 +367,7 @@ def resolve(argument: str) -> str:
     for item in formats:
         format_id = _text(item.get("format_id"))
         video_codec = _text(item.get("vcodec"))
-        audio_codec = _text(item.get("acodec"))
         if not format_id or not video_codec or video_codec == "none":
-            continue
-        if not audio_codec or audio_codec == "none":
             continue
         video_items.append(item)
 
@@ -311,6 +386,8 @@ def resolve(argument: str) -> str:
         width = _integer(item.get("width"))
         fps = _number(item.get("fps"))
         extension = str(item.get("ext") or "mp4").lower()
+        audio_codec = _text(item.get("acodec"))
+        has_audio = bool(audio_codec and audio_codec != "none")
         key = (width, height, round(fps or 0), extension)
         if key in seen_video or len(seen_video) >= 24:
             continue
@@ -322,12 +399,17 @@ def resolve(argument: str) -> str:
                 f"{height}p" if height else _text(item.get("format_note")) or "视频",
                 f"{int(fps)}fps" if fps and fps > 30 else None,
                 extension.upper(),
-                "iOS 兼容音画",
+                "音画合一" if has_audio else "iOS 自动合并音频",
             )
             if value
         )
         filesize = _integer(item.get("filesize") or item.get("filesize_approx"))
-        specs[option_id] = {"selector": format_id, "kind": "video"}
+        specs[option_id] = {
+            "selector": format_id,
+            "audio_selector": None if has_audio else "bestaudio/best",
+            "kind": "video",
+            "requires_merge": not has_audio,
+        }
         options.append(
             _option(
                 option_id,
@@ -337,6 +419,7 @@ def resolve(argument: str) -> str:
                 resolution=f"{width}×{height}" if width and height else None,
                 fps=fps,
                 filesize=filesize,
+                requires_merge=not has_audio,
             )
         )
 
@@ -449,6 +532,7 @@ def resolve(argument: str) -> str:
         "source_url": source_url,
         "title": title,
         "specs": specs,
+        "bilibili_cookie": bilibili_cookie,
     }
     if len(_CACHE) > 80:
         _CACHE.pop(next(iter(_CACHE)))
@@ -468,7 +552,12 @@ def resolve(argument: str) -> str:
             "thumbnail_url": thumbnail,
             "options": options,
             "warnings": [
-                "由 iPhone 本机解析；当前版本仅显示无需 FFmpeg 合并的 iOS 兼容格式。"
+                *(
+                    ["已使用本机加密保存的B站登录会话请求最高画质。"]
+                    if bilibili_cookie
+                    else []
+                ),
+                "由 iPhone 本机解析，分离的最高画质和音频会由 iOS 本机合并。",
             ],
         },
         ensure_ascii=False,
@@ -489,6 +578,7 @@ def download(argument: str) -> str:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     before = {path.resolve() for path in output_dir.iterdir() if path.is_file()}
+    cookie_header = _text(media.get("bilibili_cookie"))
     direct_url = spec.get("direct_url")
     if direct_url:
         parsed_extension = Path(urllib.parse.urlparse(direct_url).path).suffix
@@ -499,27 +589,63 @@ def download(argument: str) -> str:
         filename = _safe_filename(str(media["title"])) + suffix
         target = _unique_path(output_dir / filename)
         headers = {"User-Agent": _USER_AGENT, **(spec.get("headers") or {})}
+        if cookie_header:
+            headers["Cookie"] = cookie_header
         with (
             urllib.request.urlopen(
-                urllib.request.Request(direct_url, headers=headers), timeout=45
+                urllib.request.Request(direct_url, headers=headers),
+                timeout=45,
+                context=_SSL_CONTEXT,
             ) as source,
             target.open("wb") as destination,
         ):
             shutil.copyfileobj(source, destination, length=256 * 1024)
         result_path = target
     else:
-        options = _base_options()
-        options.update(
-            {
-                "skip_download": False,
-                "format": spec["selector"],
-                "outtmpl": str(output_dir / "%(title).160B [%(id)s].%(ext)s"),
-                "continuedl": True,
-                "overwrites": False,
-            }
-        )
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([media["source_url"]])
+        with _temporary_bilibili_cookie_file(cookie_header) as cookie_file:
+            options = _base_options(cookie_file)
+            options.update(
+                {
+                    "skip_download": False,
+                    "format": spec["selector"],
+                    "outtmpl": str(output_dir / "%(title).160B [%(id)s].%(ext)s"),
+                    "continuedl": True,
+                    "overwrites": False,
+                }
+            )
+            if spec.get("requires_merge"):
+                stem = _safe_filename(str(media["title"]))
+                options["outtmpl"] = str(output_dir / f"{stem}-video.%(ext)s")
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    ydl.download([media["source_url"]])
+                video_files = _new_media_files(output_dir, before)
+                if not video_files:
+                    raise RuntimeError("最高画质视频流下载失败")
+                video_path = max(video_files, key=lambda path: path.stat().st_mtime)
+                after_video = {
+                    path.resolve() for path in output_dir.iterdir() if path.is_file()
+                }
+                options["format"] = spec.get("audio_selector") or "bestaudio/best"
+                options["outtmpl"] = str(output_dir / f"{stem}-audio.%(ext)s")
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    ydl.download([media["source_url"]])
+                audio_files = _new_media_files(output_dir, after_video)
+                if not audio_files:
+                    raise RuntimeError("最高音质音频流下载失败")
+                audio_path = max(audio_files, key=lambda path: path.stat().st_mtime)
+                target = _unique_path(output_dir / f"{stem}.mp4")
+                return json.dumps(
+                    {
+                        "filename": target.name,
+                        "path": str(target),
+                        "merge_video_path": str(video_path),
+                        "merge_audio_path": str(audio_path),
+                        "message": f"已保存到“文件”App/langbai解析/{target.name}",
+                    },
+                    ensure_ascii=False,
+                )
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.download([media["source_url"]])
         created = [
             path
             for path in output_dir.iterdir()
@@ -548,6 +674,16 @@ def version(_: str) -> str:
 def _safe_filename(value: str) -> str:
     result = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", value).strip()[:160]
     return result or "langbai-media"
+
+
+def _new_media_files(output_dir: Path, before: set[Path]) -> list[Path]:
+    return [
+        path
+        for path in output_dir.iterdir()
+        if path.is_file()
+        and path.resolve() not in before
+        and path.suffix not in {".part", ".ytdl", ".temp"}
+    ]
 
 
 def _unique_path(path: Path) -> Path:

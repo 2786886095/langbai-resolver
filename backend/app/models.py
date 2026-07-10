@@ -13,6 +13,7 @@ class AssetKind(str, Enum):
 
 class ResolveRequest(BaseModel):
     url: str = Field(min_length=8, max_length=4096)
+    bilibili_cookie: str | None = Field(default=None, max_length=8192)
 
 
 class MediaOption(BaseModel):

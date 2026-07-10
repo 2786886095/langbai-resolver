@@ -55,7 +55,11 @@ class MainActivity : FlutterActivity() {
                 val input = call.argument<String>("url")?.trim().orEmpty()
                 val url = extractHttpUrl(input)
                     ?: error("未在粘贴内容中找到 http 或 https 链接")
-                resolveLocally(url)
+                val bilibiliCookie = cleanBilibiliCookie(
+                    call.argument<String>("bilibili_cookie"),
+                    url,
+                )
+                resolveLocally(url, bilibiliCookie)
             }
             "download" -> runAsync(result) {
                 val mediaId = call.argument<String>("media_id").orEmpty()
@@ -101,18 +105,21 @@ class MainActivity : FlutterActivity() {
         engineReady = true
     }
 
-    private fun resolveLocally(url: String): Map<String, Any?> {
+    private fun resolveLocally(url: String, bilibiliCookie: String?): Map<String, Any?> {
         if (isDouyinUrl(url)) {
             return resolveDouyinShare(url)
         }
         ensureEngine()
-        val request = YoutubeDLRequest(url)
-            .addOption("--dump-single-json")
-            .addOption("--no-playlist")
-            .addOption("--skip-download")
-            .addOption("--socket-timeout", "25")
-            .addOption("--retries", "2")
-        val response = YoutubeDL.getInstance().execute(request)
+        val response = withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
+            val request = YoutubeDLRequest(url)
+                .addOption("--dump-single-json")
+                .addOption("--no-playlist")
+                .addOption("--skip-download")
+                .addOption("--socket-timeout", "25")
+                .addOption("--retries", "2")
+            cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
+            YoutubeDL.getInstance().execute(request)
+        }
         val root = JSONObject(response.out.trim())
         val effective = effectiveEntry(root)
         val mediaId = UUID.randomUUID().toString()
@@ -149,7 +156,7 @@ class MainActivity : FlutterActivity() {
             ?: text(root, "webpage_url")
             ?: url
         val title = text(effective, "title") ?: text(root, "title") ?: "未命名媒体"
-        resolved[mediaId] = LocalMedia(sourceUrl, title, specs)
+        resolved[mediaId] = LocalMedia(sourceUrl, title, specs, bilibiliCookie)
         if (resolved.size > 80) resolved.keys.firstOrNull()?.let(resolved::remove)
 
         return mapOf(
@@ -169,7 +176,10 @@ class MainActivity : FlutterActivity() {
             "duration_seconds" to positiveInt(effective, "duration"),
             "thumbnail_url" to thumbnail,
             "options" to options,
-            "warnings" to listOf("由 Android 本机解析，不读取浏览器 Cookie，媒体链接不会发送到 langbai 服务器。"),
+            "warnings" to listOfNotNull(
+                bilibiliCookie?.let { "已使用本机加密保存的B站登录会话请求最高画质。" },
+                "由 Android 本机解析，媒体链接不会发送到 langbai 服务器。",
+            ),
         )
     }
 
@@ -178,6 +188,41 @@ class MainActivity : FlutterActivity() {
             .find(value)
             ?.value
             ?.trimEnd(')', ']', '}', '>', '，', '。', '！', '？', '；', '：', '、')
+
+    private fun cleanBilibiliCookie(value: String?, url: String): String? {
+        if (value.isNullOrBlank() || !isBilibiliUrl(url) || '\r' in value || '\n' in value) return null
+        val pairs = value.split(';').mapNotNull { item ->
+            val name = item.substringBefore('=', "").trim()
+            val content = item.substringAfter('=', "").trim()
+            if (name in BILIBILI_COOKIE_NAMES && content.isNotEmpty()) "$name=$content" else null
+        }
+        return pairs.joinToString("; ").takeIf { pairs.any { it.startsWith("SESSDATA=") } }
+    }
+
+    private fun isBilibiliUrl(value: String): Boolean {
+        val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
+        return host == "b23.tv" || host == "bilibili.com" || host.endsWith(".bilibili.com")
+    }
+
+    private fun <T> withBilibiliCookieFile(cookie: String?, action: (File?) -> T): T {
+        if (cookie.isNullOrBlank()) return action(null)
+        val file = File.createTempFile("langbai-bilibili-", ".txt", cacheDir)
+        return try {
+            val expires = System.currentTimeMillis() / 1000 + 30L * 24 * 60 * 60
+            val lines = mutableListOf("# Netscape HTTP Cookie File")
+            cookie.split(';').forEach { item ->
+                val name = item.substringBefore('=', "").trim()
+                val value = item.substringAfter('=', "").trim()
+                if (name in BILIBILI_COOKIE_NAMES && value.isNotEmpty()) {
+                    lines += ".bilibili.com\tTRUE\t/\tTRUE\t$expires\t$name\t$value"
+                }
+            }
+            file.writeText(lines.joinToString("\n", postfix = "\n"), Charsets.UTF_8)
+            action(file)
+        } finally {
+            file.delete()
+        }
+    }
 
     private fun isDouyinUrl(value: String): Boolean {
         val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
@@ -532,8 +577,11 @@ class MainActivity : FlutterActivity() {
                 .addOption("--audio-format", option.extension)
                 .addOption("--audio-quality", option.audioQuality ?: "0")
         }
-        YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
-            emitProgress(processId, progress.toDouble(), eta, line)
+        withBilibiliCookieFile(media.bilibiliCookie) { cookieFile ->
+            cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
+            YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
+                emitProgress(processId, progress.toDouble(), eta, line)
+            }
         }
         return taskDir.walkTopDown()
             .filter { it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") }
@@ -746,6 +794,7 @@ class MainActivity : FlutterActivity() {
         val sourceUrl: String,
         val title: String,
         val options: Map<String, LocalOption>,
+        val bilibiliCookie: String? = null,
     )
 
     private data class LocalOption(
@@ -770,5 +819,14 @@ class MainActivity : FlutterActivity() {
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "avif", "gif")
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac")
+        private val BILIBILI_COOKIE_NAMES = setOf(
+            "SESSDATA",
+            "bili_jct",
+            "DedeUserID",
+            "DedeUserID__ckMd5",
+            "sid",
+            "bili_ticket",
+            "bili_ticket_expires",
+        )
     }
 }

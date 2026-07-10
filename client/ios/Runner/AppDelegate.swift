@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import UIKit
 
@@ -83,6 +84,20 @@ import UIKit
           )
         }
         let decoded = try JSONSerialization.jsonObject(with: outputData)
+        if function == "download",
+           let payload = decoded as? [String: Any],
+           let videoPath = payload["merge_video_path"] as? String,
+           let audioPath = payload["merge_audio_path"] as? String,
+           let outputPath = payload["path"] as? String {
+          self.mergeDownloadedMedia(
+            videoPath: videoPath,
+            audioPath: audioPath,
+            outputPath: outputPath,
+            payload: payload,
+            result: result
+          )
+          return
+        }
         DispatchQueue.main.async { result(decoded) }
       } catch {
         DispatchQueue.main.async {
@@ -92,6 +107,100 @@ import UIKit
             details: nil
           ))
         }
+      }
+    }
+  }
+
+  private func mergeDownloadedMedia(
+    videoPath: String,
+    audioPath: String,
+    outputPath: String,
+    payload: [String: Any],
+    result: @escaping FlutterResult
+  ) {
+    let videoURL = URL(fileURLWithPath: videoPath)
+    let audioURL = URL(fileURLWithPath: audioPath)
+    let outputURL = URL(fileURLWithPath: outputPath)
+    do {
+      let videoAsset = AVURLAsset(url: videoURL)
+      let audioAsset = AVURLAsset(url: audioURL)
+      guard let sourceVideo = videoAsset.tracks(withMediaType: .video).first,
+            let sourceAudio = audioAsset.tracks(withMediaType: .audio).first else {
+        throw NSError(
+          domain: "com.langbai.resolver",
+          code: 10,
+          userInfo: [NSLocalizedDescriptionKey: "B站音画流不完整，无法合并"]
+        )
+      }
+      let composition = AVMutableComposition()
+      guard let targetVideo = composition.addMutableTrack(
+        withMediaType: .video,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+      ), let targetAudio = composition.addMutableTrack(
+        withMediaType: .audio,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+      ) else {
+        throw NSError(
+          domain: "com.langbai.resolver",
+          code: 11,
+          userInfo: [NSLocalizedDescriptionKey: "无法创建 iOS 音画合并任务"]
+        )
+      }
+      let duration = videoAsset.duration
+      let audioDuration = CMTimeCompare(audioAsset.duration, duration) < 0
+        ? audioAsset.duration
+        : duration
+      try targetVideo.insertTimeRange(
+        CMTimeRange(start: .zero, duration: duration),
+        of: sourceVideo,
+        at: .zero
+      )
+      try targetAudio.insertTimeRange(
+        CMTimeRange(start: .zero, duration: audioDuration),
+        of: sourceAudio,
+        at: .zero
+      )
+      targetVideo.preferredTransform = sourceVideo.preferredTransform
+      try? FileManager.default.removeItem(at: outputURL)
+      guard let exporter = AVAssetExportSession(
+        asset: composition,
+        presetName: AVAssetExportPresetPassthrough
+      ) else {
+        throw NSError(
+          domain: "com.langbai.resolver",
+          code: 12,
+          userInfo: [NSLocalizedDescriptionKey: "iOS 不支持该B站视频编码的无损合并"]
+        )
+      }
+      exporter.outputURL = outputURL
+      exporter.outputFileType = .mp4
+      exporter.shouldOptimizeForNetworkUse = true
+      exporter.exportAsynchronously {
+        defer {
+          try? FileManager.default.removeItem(at: videoURL)
+          try? FileManager.default.removeItem(at: audioURL)
+        }
+        if exporter.status == .completed {
+          var cleaned = payload
+          cleaned.removeValue(forKey: "merge_video_path")
+          cleaned.removeValue(forKey: "merge_audio_path")
+          DispatchQueue.main.async { result(cleaned) }
+        } else {
+          let message = exporter.error?.localizedDescription ?? "iOS 合并B站最高画质失败"
+          DispatchQueue.main.async {
+            result(FlutterError(code: "LOCAL_MEDIA_ERROR", message: message, details: nil))
+          }
+        }
+      }
+    } catch {
+      try? FileManager.default.removeItem(at: videoURL)
+      try? FileManager.default.removeItem(at: audioURL)
+      DispatchQueue.main.async {
+        result(FlutterError(
+          code: "LOCAL_MEDIA_ERROR",
+          message: error.localizedDescription,
+          details: nil
+        ))
       }
     }
   }

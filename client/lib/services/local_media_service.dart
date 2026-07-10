@@ -30,12 +30,15 @@ class LocalMediaService {
 
   final Map<String, ValueChanged<double>> _progressListeners = {};
 
-  Future<MediaInfo> resolve(String url) async {
+  Future<MediaInfo> resolve(String url, {String? bilibiliCookie}) async {
     if (!isSupported) {
       throw const LocalMediaException('当前平台未启用本地解析器');
     }
     try {
-      final raw = await _channel.invokeMethod<Object?>('resolve', {'url': url});
+      final raw = await _channel.invokeMethod<Object?>('resolve', {
+        'url': url,
+        if (bilibiliCookie != null) 'bilibili_cookie': bilibiliCookie,
+      });
       final json = _normalize(raw);
       if (json is! Map<String, dynamic>) {
         throw const LocalMediaException('本地解析器返回的数据格式不正确');

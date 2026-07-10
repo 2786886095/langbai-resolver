@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient
@@ -7,9 +8,11 @@ from app.config import settings
 from app.main import app
 from app.services.extractor import (
     ResolverService,
+    _clean_bilibili_cookie,
     browser_cookies_required,
     clean_ytdlp_error,
     extract_http_url,
+    temporary_bilibili_cookie_file,
 )
 
 
@@ -38,11 +41,35 @@ def test_extracts_url_from_complete_douyin_share_text() -> None:
     )
 
 
+def test_bilibili_cookie_is_scoped_and_written_for_ytdlp() -> None:
+    cleaned = _clean_bilibili_cookie(
+        "SESSDATA=session%2Cvalue; bili_jct=csrf; evil=ignored\r\nInjected=yes",
+        "https://www.bilibili.com/video/BV1xx411c7mD",
+    )
+    assert cleaned is None
+
+    cleaned = _clean_bilibili_cookie(
+        "SESSDATA=session%2Cvalue; bili_jct=csrf; evil=ignored",
+        "https://www.bilibili.com/video/BV1xx411c7mD",
+    )
+    assert cleaned == "SESSDATA=session%2Cvalue; bili_jct=csrf"
+    assert (
+        _clean_bilibili_cookie(cleaned, "https://example.com/video") is None
+    )
+    with temporary_bilibili_cookie_file(cleaned) as cookie_file:
+        assert cookie_file is not None
+        contents = Path(cookie_file).read_text(encoding="utf-8")
+        assert "# Netscape HTTP Cookie File" in contents
+        assert "\tSESSDATA\tsession%2Cvalue" in contents
+        assert "evil" not in contents
+    assert not Path(cookie_file).exists()
+
+
 def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.0.6"
+    assert payload["version"] == "1.0.7"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
 
 
