@@ -118,6 +118,7 @@ class _ParserPageState extends State<ParserPage> {
       _selected = null;
       _job = null;
     });
+    var retryWithBrowserCookies = false;
     try {
       final media = _usesLocalParser
           ? await LocalMediaService.instance.resolve(url)
@@ -138,7 +139,20 @@ class _ParserPageState extends State<ParserPage> {
         _selected = media.options.firstWhere((option) => option.kind == kind);
       });
     } on ApiException catch (error) {
-      if (mounted) setState(() => _error = error.message);
+      if (error.code == 'browser_cookies_required' &&
+          _canUseBrowserCookies &&
+          !_useBrowserCookies) {
+        retryWithBrowserCookies = await _confirmBrowserCookieAccess(
+          error.message,
+        );
+        if (retryWithBrowserCookies && mounted) {
+          await _setUseBrowserCookies(true);
+        } else if (mounted) {
+          setState(() => _error = error.message);
+        }
+      } else if (mounted) {
+        setState(() => _error = error.message);
+      }
     } on LocalMediaException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on TimeoutException {
@@ -148,6 +162,46 @@ class _ParserPageState extends State<ParserPage> {
     } finally {
       if (mounted) setState(() => _resolving = false);
     }
+    if (retryWithBrowserCookies && mounted) {
+      await _resolve();
+    }
+  }
+
+  Future<bool> _confirmBrowserCookieAccess(String message) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('抖音需要新鲜 Cookie'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(message),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '将依次尝试 Edge、Chrome 和 Firefox。Cookie 只交给电脑里的本地解析器，'
+                    '不会发送到 langbai 服务器。若重试仍失败，请先用浏览器打开该链接并正常播放一次。',
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('暂不允许'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('允许并自动重试'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   Future<void> _startDownload() async {

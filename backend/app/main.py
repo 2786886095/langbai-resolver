@@ -25,7 +25,11 @@ from app.models import (
     UpdateManifest,
     UpdatePlatformRelease,
 )
-from app.services.extractor import ResolverService
+from app.services.extractor import (
+    BrowserCookiesRequiredError,
+    ResolverService,
+    clean_ytdlp_error,
+)
 from app.services.jobs import JobManager
 from app.services.music import OpenMusicService
 from app.services.security import UnsafeUrlError
@@ -33,7 +37,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.3",
+    version="1.0.4",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(
@@ -94,8 +98,16 @@ async def resolve_media(request: ResolveRequest) -> MediaInfo:
         )
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BrowserCookiesRequiredError as exc:
+        raise HTTPException(
+            status_code=428,
+            detail={
+                "code": "browser_cookies_required",
+                "message": clean_ytdlp_error(exc),
+            },
+        ) from exc
     except yt_dlp.utils.DownloadError as exc:
-        message = str(exc).rsplit("ERROR:", 1)[-1].strip()
+        message = clean_ytdlp_error(exc)
         raise HTTPException(status_code=422, detail=message[:500]) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"解析失败：{str(exc)[:400]}") from exc

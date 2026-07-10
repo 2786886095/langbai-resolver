@@ -7,9 +7,10 @@ import 'package:http/http.dart' as http;
 import '../models/media_models.dart';
 
 class ApiException implements Exception {
-  const ApiException(this.message);
+  const ApiException(this.message, {this.code});
 
   final String message;
+  final String? code;
 
   @override
   String toString() => message;
@@ -173,8 +174,7 @@ class ApiClient {
       throw ApiException('服务器返回了无法识别的响应（${response.statusCode}）');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final detail = data['detail'];
-      throw ApiException(detail?.toString() ?? '请求失败（${response.statusCode}）');
+      throw _apiException(data, response.statusCode);
     }
     return data;
   }
@@ -187,8 +187,7 @@ class ApiClient {
       throw ApiException('服务器返回了无法识别的响应（${response.statusCode}）');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final detail = data is Map<String, dynamic> ? data['detail'] : null;
-      throw ApiException(detail?.toString() ?? '请求失败（${response.statusCode}）');
+      throw _apiException(data, response.statusCode);
     }
     if (data is! List<dynamic>) {
       throw const ApiException('服务器返回的列表格式不正确');
@@ -197,4 +196,15 @@ class ApiClient {
   }
 
   void close() => _client.close();
+}
+
+ApiException _apiException(Object? data, int statusCode) {
+  final detail = data is Map<String, dynamic> ? data['detail'] : null;
+  if (detail is Map) {
+    return ApiException(
+      detail['message']?.toString() ?? '请求失败（$statusCode）',
+      code: detail['code']?.toString(),
+    );
+  }
+  return ApiException(detail?.toString() ?? '请求失败（$statusCode）');
 }

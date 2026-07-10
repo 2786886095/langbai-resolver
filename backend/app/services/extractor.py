@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,6 +15,30 @@ from bs4 import BeautifulSoup
 from app.config import Settings
 from app.models import AssetKind, MediaInfo, MediaOption
 from app.services.security import validate_public_url
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_BROWSER_COOKIE_MARKERS = (
+    "fresh cookies",
+    "cookies are needed",
+    "cookies are required",
+)
+
+
+def clean_ytdlp_error(value: object) -> str:
+    """Return a short, display-safe yt-dlp error without terminal escapes."""
+    message = _ANSI_ESCAPE_RE.sub("", str(value))
+    message = re.sub(r"^(?:\s*ERROR:\s*)+", "", message, flags=re.IGNORECASE)
+    return " ".join(message.split()).strip()
+
+
+def browser_cookies_required(value: object) -> bool:
+    message = clean_ytdlp_error(value).lower()
+    return any(marker in message for marker in _BROWSER_COOKIE_MARKERS)
+
+
+class BrowserCookiesRequiredError(yt_dlp.utils.DownloadError):
+    """The extractor needs browser-generated cookies before it can continue."""
 
 
 @dataclass(slots=True)
@@ -85,6 +110,16 @@ class ResolverService:
                 url,
             )
         except yt_dlp.utils.DownloadError as error:
+            if browser_cookies_required(error):
+                if use_browser_cookies:
+                    raise yt_dlp.utils.DownloadError(
+                        "已尝试读取 Edge、Chrome 和 Firefox，但仍没有可用的新鲜 Cookie。"
+                        "请先用其中一个浏览器打开该抖音链接，等待页面正常播放，完全关闭浏览器后再重试。"
+                    ) from error
+                raise BrowserCookiesRequiredError(
+                    "抖音需要浏览器近期生成的匿名 Cookie（不一定需要登录）。"
+                    "允许后，langbai解析只会在本机读取浏览器 Cookie 并自动重试，不会上传。"
+                ) from error
             entry = await asyncio.to_thread(self._resolve_open_graph, url, str(error))
         self._cache[entry.media.media_id] = entry
         return entry.media
@@ -165,7 +200,7 @@ class ResolverService:
             try:
                 return self._resolve_with_ytdlp(url, browser)
             except (yt_dlp.utils.DownloadError, FileNotFoundError) as exc:
-                errors.append(f"{browser}: {str(exc).rsplit('ERROR:', 1)[-1].strip()}")
+                errors.append(f"{browser}: {clean_ytdlp_error(exc)}")
         raise yt_dlp.utils.DownloadError(
             "无法读取 Edge、Chrome 或 Firefox 的登录状态；"
             "请先在浏览器登录对应平台并完全关闭浏览器后重试。 "
@@ -439,7 +474,7 @@ class ResolverService:
             specs[option.id] = DownloadSpec(option=option, direct_url=image_url)
 
         if not specs:
-            message = extractor_error.rsplit("ERROR:", 1)[-1].strip()
+            message = clean_ytdlp_error(extractor_error)
             raise yt_dlp.utils.DownloadError(
                 f"该页面暂未发现公开媒体资源：{message[:240]}"
             )
