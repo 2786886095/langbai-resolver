@@ -72,10 +72,10 @@ import UIKit
             userInfo: [NSLocalizedDescriptionKey: "无法编码本地解析参数"]
           )
         }
-        let runtime = LBPythonRuntime.sharedRuntime()
+        let runtime = LBPythonRuntime.shared()
         try runtime.initializeRuntime()
-        guard let output = try runtime.callFunction(function, jsonArgument: json),
-              let outputData = output.data(using: .utf8) else {
+        let output = try runtime.callFunction(function, jsonArgument: json)
+        guard let outputData = output.data(using: .utf8) else {
           throw NSError(
             domain: "com.langbai.resolver",
             code: 2,
