@@ -9,10 +9,16 @@ from app.services.extractor import (
     ResolverService,
     browser_cookies_required,
     clean_ytdlp_error,
+    extract_http_url,
 )
 
 
 client = TestClient(app)
+DOUYIN_SHARE_TEXT = (
+    "3.05 复制打开抖音，看看【樱梨梨的作品】他们走不了了 "
+    "# 瓦是大明星 # 瓦赛来了 # 暮... "
+    "https://v.douyin.com/9AgsTehs2gM/ C@H.Vl :1pm 10/02 Agb:/"
+)
 
 
 def test_health() -> None:
@@ -26,11 +32,17 @@ def test_rejects_localhost() -> None:
     assert response.status_code == 400
 
 
+def test_extracts_url_from_complete_douyin_share_text() -> None:
+    assert extract_http_url(DOUYIN_SHARE_TEXT) == (
+        "https://v.douyin.com/9AgsTehs2gM/"
+    )
+
+
 def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.0.5"
+    assert payload["version"] == "1.0.6"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
 
 

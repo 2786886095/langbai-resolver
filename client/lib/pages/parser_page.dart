@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/media_models.dart';
 import '../services/api_client.dart';
 import '../services/download_saver.dart';
+import '../services/link_detector.dart';
 import '../services/local_media_service.dart';
 import '../theme/langbai_theme.dart';
 
@@ -92,16 +93,19 @@ class _ParserPageState extends State<ParserPage> {
   Future<void> _paste() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null) {
-      _urlController.text = data!.text!.trim();
+      final text = data!.text!.trim();
+      _urlController.text = LinkDetector.extractHttpUrl(text) ?? text;
     }
   }
 
   Future<void> _resolve() async {
-    final url = _urlController.text.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      setState(() => _error = '请粘贴完整的 http 或 https 链接');
+    final input = _urlController.text.trim();
+    final url = LinkDetector.extractHttpUrl(input);
+    if (url == null) {
+      setState(() => _error = '未在粘贴内容中找到 http 或 https 链接');
       return;
     }
+    _urlController.text = url;
     setState(() {
       _resolving = true;
       _error = null;

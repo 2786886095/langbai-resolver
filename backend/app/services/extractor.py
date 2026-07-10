@@ -35,6 +35,8 @@ _DOUYIN_MOBILE_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
     "AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
 )
+_HTTP_URL_RE = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
+_TRAILING_SHARE_PUNCTUATION = ")]}>，。！？；：、"
 
 
 def clean_ytdlp_error(value: object) -> str:
@@ -47,6 +49,11 @@ def clean_ytdlp_error(value: object) -> str:
 def browser_cookies_required(value: object) -> bool:
     message = clean_ytdlp_error(value).lower()
     return any(marker in message for marker in _BROWSER_COOKIE_MARKERS)
+
+
+def extract_http_url(value: str) -> str | None:
+    match = _HTTP_URL_RE.search(value.strip())
+    return match.group(0).rstrip(_TRAILING_SHARE_PUNCTUATION) if match else None
 
 
 @dataclass(slots=True)
@@ -96,8 +103,11 @@ class ResolverService:
         self._cache: dict[str, ResolvedEntry] = {}
 
     async def resolve(self, raw_url: str) -> MediaInfo:
+        candidate = extract_http_url(raw_url)
+        if not candidate:
+            raise ValueError("未在粘贴内容中找到 http 或 https 链接")
         url = await asyncio.to_thread(
-            validate_public_url, raw_url, self._settings.allow_fake_ip_dns
+            validate_public_url, candidate, self._settings.allow_fake_ip_dns
         )
         self._prune()
         direct_entry = self._resolve_direct_url(url)

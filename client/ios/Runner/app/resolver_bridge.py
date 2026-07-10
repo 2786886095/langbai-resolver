@@ -19,6 +19,8 @@ _USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
     "AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
 )
+_HTTP_URL_RE = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
+_TRAILING_SHARE_PUNCTUATION = ")]}>，。！？；：、"
 
 
 def _text(value: object) -> str | None:
@@ -26,6 +28,11 @@ def _text(value: object) -> str | None:
         return None
     result = str(value).strip()
     return result or None
+
+
+def _extract_http_url(value: str) -> str | None:
+    match = _HTTP_URL_RE.search(value.strip())
+    return match.group(0).rstrip(_TRAILING_SHARE_PUNCTUATION) if match else None
 
 
 def _integer(value: object) -> int | None:
@@ -258,9 +265,9 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
 
 def resolve(argument: str) -> str:
     request = json.loads(argument)
-    url = str(request.get("url") or "").strip()
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("请输入完整的 http 或 https 链接")
+    url = _extract_http_url(str(request.get("url") or ""))
+    if not url:
+        raise ValueError("未在粘贴内容中找到 http 或 https 链接")
     if _is_douyin_url(url):
         return json.dumps(_resolve_douyin_share(url), ensure_ascii=False)
 

@@ -52,10 +52,9 @@ class MainActivity : FlutterActivity() {
         when (call.method) {
             "isAvailable" -> result.success(true)
             "resolve" -> runAsync(result) {
-                val url = call.argument<String>("url")?.trim().orEmpty()
-                require(url.startsWith("https://") || url.startsWith("http://")) {
-                    "请输入完整的 http 或 https 链接"
-                }
+                val input = call.argument<String>("url")?.trim().orEmpty()
+                val url = extractHttpUrl(input)
+                    ?: error("未在粘贴内容中找到 http 或 https 链接")
                 resolveLocally(url)
             }
             "download" -> runAsync(result) {
@@ -173,6 +172,12 @@ class MainActivity : FlutterActivity() {
             "warnings" to listOf("由 Android 本机解析，不读取浏览器 Cookie，媒体链接不会发送到 langbai 服务器。"),
         )
     }
+
+    private fun extractHttpUrl(value: String): String? =
+        Regex("https?://[^\\s<>\\\"']+", RegexOption.IGNORE_CASE)
+            .find(value)
+            ?.value
+            ?.trimEnd(')', ']', '}', '>', '，', '。', '！', '？', '；', '：', '、')
 
     private fun isDouyinUrl(value: String): Boolean {
         val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")

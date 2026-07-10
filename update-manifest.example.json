@@ -1,6 +1,6 @@
 {
-  "version": "1.0.5",
-  "notes": "抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需浏览器 Cookie。",
+  "version": "1.0.6",
+  "notes": "支持直接粘贴整段抖音分享文案，自动提取链接并匿名解析。",
   "published_at": "2026-07-10T00:00:00Z",
   "platforms": {
     "windows": {
