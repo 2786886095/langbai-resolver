@@ -15,3 +15,6 @@ client/.flutter-plugins-dependencies
 *.ipa
 *.apk
 *.aab
+# Generated iOS Python runtime and installed Python packages.
+client/ios/Python.xcframework/
+client/ios/Runner/app_packages/

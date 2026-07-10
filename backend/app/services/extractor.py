@@ -23,6 +23,7 @@ class DownloadSpec:
     direct_url: str | None = None
     preferred_codec: str | None = None
     preferred_quality: str | None = None
+    cookie_browser: str | None = None
 
 
 @dataclass(slots=True)
@@ -62,7 +63,12 @@ class ResolverService:
         self._settings = settings
         self._cache: dict[str, ResolvedEntry] = {}
 
-    async def resolve(self, raw_url: str) -> MediaInfo:
+    async def resolve(
+        self,
+        raw_url: str,
+        *,
+        use_browser_cookies: bool = False,
+    ) -> MediaInfo:
         url = await asyncio.to_thread(
             validate_public_url, raw_url, self._settings.allow_fake_ip_dns
         )
@@ -72,7 +78,12 @@ class ResolverService:
             self._cache[direct_entry.media.media_id] = direct_entry
             return direct_entry.media
         try:
-            entry = await asyncio.to_thread(self._resolve_with_ytdlp, url)
+            entry = await asyncio.to_thread(
+                self._resolve_with_browser_fallback
+                if use_browser_cookies
+                else self._resolve_with_ytdlp,
+                url,
+            )
         except yt_dlp.utils.DownloadError as error:
             entry = await asyncio.to_thread(self._resolve_open_graph, url, str(error))
         self._cache[entry.media.media_id] = entry
@@ -123,7 +134,10 @@ class ResolverService:
         self._prune()
         return self._cache.get(media_id)
 
-    def _base_ytdlp_options(self) -> dict[str, Any]:
+    def _base_ytdlp_options(
+        self,
+        cookie_browser: str | None = None,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -141,10 +155,29 @@ class ResolverService:
         }
         if self._settings.cookie_file and self._settings.cookie_file.is_file():
             options["cookiefile"] = str(self._settings.cookie_file)
+        elif cookie_browser:
+            options["cookiesfrombrowser"] = (cookie_browser,)
         return options
 
-    def _resolve_with_ytdlp(self, url: str) -> ResolvedEntry:
-        with yt_dlp.YoutubeDL(self._base_ytdlp_options()) as ydl:
+    def _resolve_with_browser_fallback(self, url: str) -> ResolvedEntry:
+        errors: list[str] = []
+        for browser in ("edge", "chrome", "firefox"):
+            try:
+                return self._resolve_with_ytdlp(url, browser)
+            except (yt_dlp.utils.DownloadError, FileNotFoundError) as exc:
+                errors.append(f"{browser}: {str(exc).rsplit('ERROR:', 1)[-1].strip()}")
+        raise yt_dlp.utils.DownloadError(
+            "无法读取 Edge、Chrome 或 Firefox 的登录状态；"
+            "请先在浏览器登录对应平台并完全关闭浏览器后重试。 "
+            + " | ".join(errors[-2:])
+        )
+
+    def _resolve_with_ytdlp(
+        self,
+        url: str,
+        cookie_browser: str | None = None,
+    ) -> ResolvedEntry:
+        with yt_dlp.YoutubeDL(self._base_ytdlp_options(cookie_browser)) as ydl:
             raw_info = ydl.extract_info(url, download=False)
 
         if not raw_info:
@@ -325,6 +358,11 @@ class ResolverService:
 
         if not specs:
             raise yt_dlp.utils.DownloadError("没有找到可下载资源")
+
+        if cookie_browser:
+            for spec in specs.values():
+                spec.cookie_browser = cookie_browser
+            warnings.append(f"本次使用 {cookie_browser.title()} 的本机登录状态解析。")
 
         media = MediaInfo(
             media_id=media_id,

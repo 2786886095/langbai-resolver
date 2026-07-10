@@ -23,7 +23,8 @@ android {
         applicationId = "com.langbai.mediaharbor"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // The embedded Python/yt-dlp runtime requires Android 7.0 or newer.
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -35,6 +36,12 @@ android {
             signingConfig = signingConfigs.debug
         }
     }
+}
+
+dependencies {
+    implementation "io.github.junkfood02.youtubedl-android:library:0.18.1"
+    implementation "io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1"
+    implementation "io.github.junkfood02.youtubedl-android:aria2c:0.18.1"
 }
 
 flutter {

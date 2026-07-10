@@ -23,5 +23,5 @@ def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.0.2"
+    assert payload["version"] == "1.0.3"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])

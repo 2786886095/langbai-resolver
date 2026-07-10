@@ -14,6 +14,7 @@ import '../pages/parser_page.dart';
 import '../pages/tools_page.dart';
 import '../services/api_client.dart';
 import '../services/link_detector.dart';
+import '../services/local_media_service.dart';
 import '../services/update_installer.dart';
 import '../services/update_models.dart';
 import '../services/update_service.dart';
@@ -96,6 +97,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       if (_demoClipboardLink.isEmpty) _checkClipboard();
       if (_automaticUpdateChecksEnabled) _checkForUpdates();
     });
+    if (LocalMediaService.isSupported) {
+      unawaited(_refreshLocalParser(preferences));
+    }
+  }
+
+  Future<void> _refreshLocalParser(SharedPreferences preferences) async {
+    const interval = Duration(hours: 24);
+    final lastValue = preferences.getInt('local_parser_updated_at');
+    final last = lastValue == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(lastValue);
+    if (last != null && DateTime.now().difference(last) < interval) return;
+    try {
+      await LocalMediaService.instance.updateEngine();
+      await preferences.setInt(
+        'local_parser_updated_at',
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    } on Object {
+      // The bundled extractor remains available when an update check fails.
+    }
   }
 
   Future<void> _checkClipboard() async {
@@ -111,6 +133,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   Future<void> _checkServiceHealth() async {
+    if (LocalMediaService.isSupported) {
+      if (mounted && _serviceHealthy != true) {
+        setState(() => _serviceHealthy = true);
+      }
+      return;
+    }
     final preferences = await SharedPreferences.getInstance();
     final baseUrl =
         preferences.getString('api_base_url')?.trim() ?? _defaultShellApiUrl;
@@ -531,6 +559,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   child: _DesktopNavigation(
                     selectedIndex: _selectedIndex,
                     serviceHealthy: _serviceHealthy,
+                    localParser: LocalMediaService.isSupported,
                     onSelected: (value) =>
                         setState(() => _selectedIndex = value),
                     onSettings: _showSettings,
@@ -609,6 +638,7 @@ class _DesktopNavigation extends StatelessWidget {
   const _DesktopNavigation({
     required this.selectedIndex,
     required this.serviceHealthy,
+    required this.localParser,
     required this.onSelected,
     required this.onSettings,
     required this.onAbout,
@@ -616,6 +646,7 @@ class _DesktopNavigation extends StatelessWidget {
 
   final int selectedIndex;
   final bool? serviceHealthy;
+  final bool localParser;
   final ValueChanged<int> onSelected;
   final VoidCallback onSettings;
   final VoidCallback onAbout;
@@ -692,10 +723,16 @@ class _DesktopNavigation extends StatelessWidget {
                     Expanded(
                       child: Text(
                         serviceHealthy == null
-                            ? '正在连接解析服务'
+                            ? localParser
+                                ? '正在加载本地解析器'
+                                : '正在连接解析服务'
                             : serviceHealthy!
-                                ? '解析服务运行正常'
-                                : '解析服务未连接',
+                                ? localParser
+                                    ? '本地解析器运行正常'
+                                    : '解析服务运行正常'
+                                : localParser
+                                    ? '本地解析器不可用'
+                                    : '解析服务未连接',
                         style: const TextStyle(fontSize: 12),
                       ),
                     ),

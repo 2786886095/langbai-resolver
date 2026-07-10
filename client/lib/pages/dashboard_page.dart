@@ -163,7 +163,7 @@ class _QuickTools extends StatelessWidget {
       ('parser', Icons.play_circle_outline_rounded, '视频解析', '分辨率 / 音频 / 封面'),
       ('audio', Icons.graphic_eq_rounded, '音频提取', '从视频导出音频'),
       ('compress', Icons.compress_rounded, '媒体压缩', '视频与图片缩小体积'),
-      ('music', Icons.headphones_rounded, '音乐搜索', '合法来源无损资源'),
+      ('music', Icons.headphones_rounded, '多源音乐搜索', '开放下载 / 试听 / 全球元数据'),
       ('transfer', Icons.hub_outlined, '高级下载', '直链 / 磁力 / 种子'),
     ];
     return LayoutBuilder(
