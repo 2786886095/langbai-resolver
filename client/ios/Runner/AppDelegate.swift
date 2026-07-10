@@ -1,5 +1,6 @@
 import AVFoundation
 import Flutter
+import Photos
 import UIKit
 
 @main
@@ -50,6 +51,32 @@ import UIKit
       } catch {
         result(FlutterError(code: "LOCAL_MEDIA_ERROR", message: error.localizedDescription, details: nil))
       }
+    case "saveMobileFile":
+      guard let arguments = call.arguments as? [String: Any],
+            let path = arguments["path"] as? String else {
+        result(FlutterError(code: "INVALID_ARGUMENT", message: "保存参数不正确", details: nil))
+        return
+      }
+      let mediaType = arguments["media_type"] as? String ?? "file"
+      guard mediaType == "image" || mediaType == "video" else {
+        result(FlutterError(code: "INVALID_ARGUMENT", message: "只有图片和视频可以保存到相册", details: nil))
+        return
+      }
+      let filename = arguments["filename"] as? String
+        ?? URL(fileURLWithPath: path).lastPathComponent
+      saveMediaToPhotos(
+        fileURL: URL(fileURLWithPath: path),
+        mediaType: mediaType
+      ) { error in
+        if let error {
+          result(FlutterError(code: "PHOTO_LIBRARY_ERROR", message: error.localizedDescription, details: nil))
+        } else {
+          result([
+            "filename": filename,
+            "message": "已保存到系统相册",
+          ])
+        }
+      }
     case "updateEngine":
       runPython(function: "version", arguments: [:], result: result)
     default:
@@ -65,6 +92,9 @@ import UIKit
     DispatchQueue.global(qos: .userInitiated).async {
       do {
         let object = arguments ?? [:]
+        let requestArguments = object as? [String: Any]
+        let saveDestination = requestArguments?["save_destination"] as? String ?? "files"
+        let mediaType = requestArguments?["media_type"] as? String ?? "file"
         let data = try JSONSerialization.data(withJSONObject: object)
         guard let json = String(data: data, encoding: .utf8) else {
           throw NSError(
@@ -94,6 +124,17 @@ import UIKit
             audioPath: audioPath,
             outputPath: outputPath,
             payload: payload,
+            saveDestination: saveDestination,
+            mediaType: mediaType,
+            result: result
+          )
+          return
+        }
+        if function == "download", let payload = decoded as? [String: Any] {
+          self.finishDownloadedMedia(
+            payload: payload,
+            saveDestination: saveDestination,
+            mediaType: mediaType,
             result: result
           )
           return
@@ -116,6 +157,8 @@ import UIKit
     audioPath: String,
     outputPath: String,
     payload: [String: Any],
+    saveDestination: String,
+    mediaType: String,
     result: @escaping FlutterResult
   ) {
     let videoURL = URL(fileURLWithPath: videoPath)
@@ -184,7 +227,12 @@ import UIKit
           var cleaned = payload
           cleaned.removeValue(forKey: "merge_video_path")
           cleaned.removeValue(forKey: "merge_audio_path")
-          DispatchQueue.main.async { result(cleaned) }
+          self.finishDownloadedMedia(
+            payload: cleaned,
+            saveDestination: saveDestination,
+            mediaType: mediaType,
+            result: result
+          )
         } else {
           let message = exporter.error?.localizedDescription ?? "iOS 合并B站最高画质失败"
           DispatchQueue.main.async {
@@ -202,6 +250,118 @@ import UIKit
           details: nil
         ))
       }
+    }
+  }
+
+  private func finishDownloadedMedia(
+    payload: [String: Any],
+    saveDestination: String,
+    mediaType: String,
+    result: @escaping FlutterResult
+  ) {
+    guard saveDestination == "gallery" else {
+      DispatchQueue.main.async { result(payload) }
+      return
+    }
+    guard mediaType == "image" || mediaType == "video",
+          let path = payload["path"] as? String else {
+      DispatchQueue.main.async {
+        result(FlutterError(
+          code: "PHOTO_LIBRARY_ERROR",
+          message: "该资源不能保存到相册",
+          details: nil
+        ))
+      }
+      return
+    }
+    let fileURL = URL(fileURLWithPath: path)
+    saveMediaToPhotos(fileURL: fileURL, mediaType: mediaType) { error in
+      if let error {
+        result(FlutterError(
+          code: "PHOTO_LIBRARY_ERROR",
+          message: error.localizedDescription,
+          details: nil
+        ))
+        return
+      }
+      try? FileManager.default.removeItem(at: fileURL)
+      var saved = payload
+      saved.removeValue(forKey: "path")
+      saved["message"] = "已保存到系统相册"
+      result(saved)
+    }
+  }
+
+  private func saveMediaToPhotos(
+    fileURL: URL,
+    mediaType: String,
+    completion: @escaping (Error?) -> Void
+  ) {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+      DispatchQueue.main.async {
+        completion(NSError(
+          domain: "com.langbai.resolver",
+          code: 20,
+          userInfo: [NSLocalizedDescriptionKey: "待保存的媒体文件不存在"]
+        ))
+      }
+      return
+    }
+
+    let save = {
+      PHPhotoLibrary.shared().performChanges {
+        if mediaType == "video" {
+          PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
+        } else {
+          PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: fileURL)
+        }
+      } completionHandler: { success, error in
+        DispatchQueue.main.async {
+          if success {
+            completion(nil)
+          } else {
+            completion(error ?? NSError(
+              domain: "com.langbai.resolver",
+              code: 21,
+              userInfo: [NSLocalizedDescriptionKey: "系统相册不支持该媒体格式"]
+            ))
+          }
+        }
+      }
+    }
+
+    let handleAuthorization: (PHAuthorizationStatus) -> Void = { status in
+      if status == .authorized {
+        save()
+        return
+      }
+      if #available(iOS 14, *), status == .limited {
+        save()
+        return
+      }
+      if status == .denied || status == .restricted {
+        DispatchQueue.main.async {
+          completion(NSError(
+            domain: "com.langbai.resolver",
+            code: 22,
+            userInfo: [NSLocalizedDescriptionKey: "没有相册权限，请在系统设置中允许添加照片"]
+          ))
+        }
+        return
+      }
+      DispatchQueue.main.async {
+        completion(NSError(
+          domain: "com.langbai.resolver",
+          code: 23,
+          userInfo: [NSLocalizedDescriptionKey: "无法获得系统相册权限"]
+        ))
+      }
+    }
+
+    if #available(iOS 14, *) {
+      PHPhotoLibrary.requestAuthorization(for: .addOnly, handler: handleAuthorization)
+    } else {
+      PHPhotoLibrary.requestAuthorization(handleAuthorization)
     }
   }
 }

@@ -6,4 +6,6 @@ class SaveResult {
   final bool cancelled;
 }
 
+enum SaveDestination { files, gallery }
+
 typedef DownloadProgress = void Function(double progress);

@@ -1,6 +1,7 @@
 package com.langbai.mediaharbor
 
 import android.content.ContentValues
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -65,7 +66,32 @@ class MainActivity : FlutterActivity() {
                 val mediaId = call.argument<String>("media_id").orEmpty()
                 val optionId = call.argument<String>("option_id").orEmpty()
                 val processId = call.argument<String>("process_id") ?: UUID.randomUUID().toString()
-                downloadLocally(mediaId, optionId, processId)
+                val destination = call.argument<String>("save_destination") ?: "files"
+                downloadLocally(mediaId, optionId, processId, destination)
+            }
+            "saveMobileFile" -> runAsync(result) {
+                val path = call.argument<String>("path").orEmpty()
+                val source = File(path)
+                require(source.isFile) { "待保存文件不存在" }
+                val destination = call.argument<String>("save_destination") ?: "files"
+                val mediaType = call.argument<String>("media_type") ?: "file"
+                val published = if (destination == "gallery") {
+                    require(mediaType == "image" || mediaType == "video") {
+                        "只有图片和视频可以保存到相册"
+                    }
+                    publishToGallery(source, mediaType)
+                } else {
+                    publishToDownloads(source)
+                }
+                mapOf(
+                    "filename" to published.name,
+                    "path" to published.location,
+                    "message" to if (destination == "gallery") {
+                        "已保存到系统相册"
+                    } else {
+                        "已保存到 Download/langbai解析/${published.name}"
+                    },
+                )
             }
             "updateEngine" -> runAsync(result) {
                 ensureEngine()
@@ -535,6 +561,7 @@ class MainActivity : FlutterActivity() {
         mediaId: String,
         optionId: String,
         processId: String,
+        destination: String,
     ): Map<String, Any?> {
         ensureEngine()
         val media = resolved[mediaId] ?: error("解析结果已过期，请重新解析链接")
@@ -547,12 +574,23 @@ class MainActivity : FlutterActivity() {
         } else {
             downloadWithYtDlp(media, option, taskDir, processId)
         }
-        val published = publishToDownloads(output)
+        val published = if (destination == "gallery") {
+            require(option.kind == "image" || option.kind == "video") {
+                "只有图片和视频可以保存到相册"
+            }
+            publishToGallery(output, option.kind)
+        } else {
+            publishToDownloads(output)
+        }
         taskDir.deleteRecursively()
         return mapOf(
             "filename" to published.name,
             "path" to published.location,
-            "message" to "已保存到 Download/langbai解析/${published.name}",
+            "message" to if (destination == "gallery") {
+                "已保存到系统相册"
+            } else {
+                "已保存到 Download/langbai解析/${published.name}"
+            },
         )
     }
 
@@ -663,6 +701,55 @@ class MainActivity : FlutterActivity() {
         return PublishedFile(destination.name, destination.absolutePath)
     }
 
+    private fun publishToGallery(source: File, mediaType: String): PublishedFile {
+        val name = source.name.take(220)
+        val directoryName = if (mediaType == "image") {
+            Environment.DIRECTORY_PICTURES
+        } else {
+            Environment.DIRECTORY_MOVIES
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType(name))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "$directoryName/langbai解析")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val collection = if (mediaType == "image") {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            }
+            val uri = contentResolver.insert(collection, values)
+                ?: error("无法在系统相册中创建媒体文件")
+            try {
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    source.inputStream().use { it.copyTo(output) }
+                } ?: error("无法写入系统相册")
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+                return PublishedFile(name, uri.toString())
+            } catch (error: Throwable) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        val base = Environment.getExternalStoragePublicDirectory(directoryName)
+        val directory = File(base, "langbai解析").apply { mkdirs() }
+        val destination = uniqueFile(directory, name)
+        source.copyTo(destination, overwrite = false)
+        MediaScannerConnection.scanFile(
+            applicationContext,
+            arrayOf(destination.absolutePath),
+            arrayOf(mimeType(destination.name)),
+            null,
+        )
+        return PublishedFile(destination.name, destination.absolutePath)
+    }
+
     private fun emitProgress(
         processId: String,
         progress: Double,
@@ -764,8 +851,11 @@ class MainActivity : FlutterActivity() {
         "wav" -> "audio/wav"
         "ogg", "opus" -> "audio/ogg"
         "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
         "webp" -> "image/webp"
         "gif" -> "image/gif"
+        "heic", "heif" -> "image/heic"
+        "avif" -> "image/avif"
         else -> "application/octet-stream"
     }
 

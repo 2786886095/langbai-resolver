@@ -1,10 +1,9 @@
 import 'dart:io';
-import 'dart:ui';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'download_types.dart';
@@ -12,12 +11,21 @@ import 'download_types.dart';
 Future<SaveResult> saveDownload(
   Uri uri,
   String filename,
-  DownloadProgress onProgress,
-) async {
+  DownloadProgress onProgress, {
+  SaveDestination destination = SaveDestination.files,
+  String mediaType = 'file',
+}) async {
   late final File target;
   final isMobile = Platform.isAndroid || Platform.isIOS;
   if (isMobile) {
-    final directory = await getApplicationDocumentsDirectory();
+    final directory =
+        destination == SaveDestination.gallery || Platform.isAndroid
+            ? await getTemporaryDirectory()
+            : Directory(
+                '${(await getApplicationDocumentsDirectory()).path}'
+                '${Platform.pathSeparator}langbai解析',
+              );
+    await directory.create(recursive: true);
     target = _availableFile(directory, filename);
   } else {
     final preferences = await SharedPreferences.getInstance();
@@ -59,16 +67,27 @@ Future<SaveResult> saveDownload(
   onProgress(1);
 
   if (isMobile) {
-    await Share.shareXFiles(
-      [XFile(target.path)],
-      subject: filename,
-      text: '保存或分享 $filename',
-      sharePositionOrigin: const Rect.fromLTWH(0, 0, 1, 1),
-    );
-    return SaveResult(
-      message: Platform.isIOS ? '文件已下载，可在系统面板中选择“存储到文件”' : '文件已下载，可从系统面板保存或分享',
-      path: target.path,
-    );
+    if (Platform.isIOS && destination == SaveDestination.files) {
+      return SaveResult(message: '已保存到“文件”App/langbai解析', path: target.path);
+    }
+    try {
+      final raw = await const MethodChannel('com.langbai.resolver/local_media')
+          .invokeMapMethod<String, dynamic>('saveMobileFile', {
+        'path': target.path,
+        'filename': filename,
+        'save_destination': destination.name,
+        'media_type': mediaType,
+      });
+      return SaveResult(
+        message: raw?['message']?.toString() ??
+            (destination == SaveDestination.gallery
+                ? '已保存到系统相册'
+                : '已保存到 Download/langbai解析'),
+        path: raw?['path']?.toString(),
+      );
+    } finally {
+      if (await target.exists()) await target.delete();
+    }
   }
   return SaveResult(message: '文件已保存至 ${target.path}', path: target.path);
 }
