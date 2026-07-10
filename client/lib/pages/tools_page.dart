@@ -349,7 +349,7 @@ class _ToolCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       color: selected ? context.palette.navigationSelected : null,
       child: InkWell(
         onTap: onTap,
@@ -417,7 +417,7 @@ class _ToolWorkspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(22),
         child: Column(
@@ -560,7 +560,7 @@ class _ToolProgress extends StatelessWidget {
       JobState.completed => saving ? '正在保存到设备' : '任务完成',
       JobState.failed => '任务失败',
     };
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -604,7 +604,7 @@ class _ToolResults extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

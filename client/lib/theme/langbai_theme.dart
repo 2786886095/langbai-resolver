@@ -119,15 +119,7 @@ class LangbaiTheme {
             isDark ? const Color(0xFFF4F7FF) : const Color(0xFF172033),
       ),
       dividerColor: palette.border,
-      cardTheme: CardTheme(
-        color: surface,
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: palette.border),
-        ),
-      ),
+      cardColor: surface,
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: palette.surfaceRaised,
@@ -182,6 +174,36 @@ class LangbaiTheme {
         indicatorColor: palette.navigationSelected,
         height: 72,
       ),
+    );
+  }
+}
+
+class LangbaiCard extends StatelessWidget {
+  const LangbaiCard({
+    super.key,
+    this.child,
+    this.color,
+    this.clipBehavior = Clip.none,
+    this.margin = EdgeInsets.zero,
+  });
+
+  final Widget? child;
+  final Color? color;
+  final Clip clipBehavior;
+  final EdgeInsetsGeometry margin;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: color ?? Theme.of(context).colorScheme.surface,
+      elevation: 0,
+      margin: margin,
+      clipBehavior: clipBehavior,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: context.palette.border),
+      ),
+      child: child,
     );
   }
 }

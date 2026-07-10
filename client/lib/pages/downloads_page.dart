@@ -34,7 +34,7 @@ class DownloadsPage extends StatelessWidget {
                 Expanded(
                   child: records.isEmpty
                       ? _EmptyDownloads()
-                      : Card(
+                      : LangbaiCard(
                           child: ListView.separated(
                             itemCount: records.length,
                             separatorBuilder: (_, __) => Divider(
@@ -56,7 +56,7 @@ class DownloadsPage extends StatelessWidget {
 class _EmptyDownloads extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(28),

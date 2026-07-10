@@ -29,11 +29,12 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - name: Build iOS app without signing
-        run: >-
-          flutter build ios --release --no-codesign
-          --build-name "${APP_VERSION}"
-          --dart-define="APP_VERSION=${APP_VERSION}"
-          --dart-define="UPDATE_MANIFEST_URL=${UPDATE_MANIFEST_URL}"
+        run: |
+          flutter build ios --release --no-codesign --config-only --build-name "${APP_VERSION}" --dart-define="APP_VERSION=${APP_VERSION}" --dart-define="UPDATE_MANIFEST_URL=${UPDATE_MANIFEST_URL}"
+          cd ios
+          pod install
+          cd ..
+          flutter build ios --release --no-codesign --build-name "${APP_VERSION}" --dart-define="APP_VERSION=${APP_VERSION}" --dart-define="UPDATE_MANIFEST_URL=${UPDATE_MANIFEST_URL}"
       - name: Package unsigned IPA
         run: |
           mkdir -p build/ipa/Payload

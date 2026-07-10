@@ -295,7 +295,7 @@ class _ParserPageState extends State<ParserPage> {
   }
 
   Widget _buildHero(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -394,7 +394,7 @@ class _ParserPageState extends State<ParserPage> {
         .toList(growable: false);
     final options =
         media.options.where((option) => option.kind == _kind).toList();
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(22),
         child: Column(

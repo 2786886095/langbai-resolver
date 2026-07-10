@@ -87,6 +87,10 @@ jobs:
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           flutter pub get
+          flutter build ios --release --no-codesign --config-only --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          cd ios
+          pod install
+          cd ..
           flutter build ios --release --no-codesign --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
           mkdir -p build/ipa/Payload
           cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/

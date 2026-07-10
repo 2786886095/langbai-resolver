@@ -140,7 +140,7 @@ class _DetectedLinkPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final uri = Uri.tryParse(link.value);
     final source = uri?.host.replaceFirst('www.', '') ?? '已识别链接';
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: LayoutBuilder(
@@ -306,7 +306,7 @@ class _ManualLinkPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: LayoutBuilder(
@@ -406,7 +406,7 @@ class _QuickTools extends StatelessWidget {
             for (final tool in tools)
               SizedBox(
                 width: width,
-                child: Card(
+                child: LangbaiCard(
                   child: InkWell(
                     onTap: () => onOpen(tool.$1),
                     borderRadius: BorderRadius.circular(16),
@@ -455,7 +455,7 @@ class _RecentTasks extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return LangbaiCard(
       child: Column(
         children: [
           Padding(
