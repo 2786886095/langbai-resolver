@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -23,6 +24,17 @@ _BROWSER_COOKIE_MARKERS = (
     "cookies are needed",
     "cookies are required",
 )
+_DOUYIN_HOSTS = {
+    "douyin.com",
+    "www.douyin.com",
+    "v.douyin.com",
+    "iesdouyin.com",
+    "www.iesdouyin.com",
+}
+_DOUYIN_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+    "AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
+)
 
 
 def clean_ytdlp_error(value: object) -> str:
@@ -37,10 +49,6 @@ def browser_cookies_required(value: object) -> bool:
     return any(marker in message for marker in _BROWSER_COOKIE_MARKERS)
 
 
-class BrowserCookiesRequiredError(yt_dlp.utils.DownloadError):
-    """The extractor needs browser-generated cookies before it can continue."""
-
-
 @dataclass(slots=True)
 class DownloadSpec:
     option: MediaOption
@@ -48,7 +56,6 @@ class DownloadSpec:
     direct_url: str | None = None
     preferred_codec: str | None = None
     preferred_quality: str | None = None
-    cookie_browser: str | None = None
 
 
 @dataclass(slots=True)
@@ -88,12 +95,7 @@ class ResolverService:
         self._settings = settings
         self._cache: dict[str, ResolvedEntry] = {}
 
-    async def resolve(
-        self,
-        raw_url: str,
-        *,
-        use_browser_cookies: bool = False,
-    ) -> MediaInfo:
+    async def resolve(self, raw_url: str) -> MediaInfo:
         url = await asyncio.to_thread(
             validate_public_url, raw_url, self._settings.allow_fake_ip_dns
         )
@@ -102,27 +104,192 @@ class ResolverService:
         if direct_entry:
             self._cache[direct_entry.media.media_id] = direct_entry
             return direct_entry.media
+        if self._is_douyin_url(url):
+            try:
+                entry = await asyncio.to_thread(self._resolve_douyin_share, url)
+            except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+                raise yt_dlp.utils.DownloadError(
+                    "抖音匿名分享页暂时没有返回可下载资源，请更新解析器或稍后重试"
+                ) from error
+            self._cache[entry.media.media_id] = entry
+            return entry.media
         try:
-            entry = await asyncio.to_thread(
-                self._resolve_with_browser_fallback
-                if use_browser_cookies
-                else self._resolve_with_ytdlp,
-                url,
-            )
+            entry = await asyncio.to_thread(self._resolve_with_ytdlp, url)
         except yt_dlp.utils.DownloadError as error:
             if browser_cookies_required(error):
-                if use_browser_cookies:
-                    raise yt_dlp.utils.DownloadError(
-                        "已尝试读取 Edge、Chrome 和 Firefox，但仍没有可用的新鲜 Cookie。"
-                        "请先用其中一个浏览器打开该抖音链接，等待页面正常播放，完全关闭浏览器后再重试。"
-                    ) from error
-                raise BrowserCookiesRequiredError(
-                    "抖音需要浏览器近期生成的匿名 Cookie（不一定需要登录）。"
-                    "允许后，langbai解析只会在本机读取浏览器 Cookie 并自动重试，不会上传。"
+                raise yt_dlp.utils.DownloadError(
+                    "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取 Cookie"
                 ) from error
             entry = await asyncio.to_thread(self._resolve_open_graph, url, str(error))
         self._cache[entry.media.media_id] = entry
         return entry.media
+
+    @staticmethod
+    def _is_douyin_url(url: str) -> bool:
+        hostname = (urlparse(url).hostname or "").lower()
+        return hostname in _DOUYIN_HOSTS or hostname.endswith(".douyin.com")
+
+    @staticmethod
+    def _douyin_video_id(value: str) -> str | None:
+        match = re.search(r"/(?:video|note)/(\d{10,})", value)
+        if match:
+            return match.group(1)
+        parsed = urlparse(value)
+        for key in ("modal_id", "aweme_id", "item_id"):
+            match = re.search(rf"(?:^|[?&]){key}=(\d{{10,}})", parsed.query)
+            if match:
+                return match.group(1)
+        return None
+
+    def _resolve_douyin_share(self, url: str) -> ResolvedEntry:
+        video_id = self._douyin_video_id(url)
+        if not video_id:
+            current = url
+            for _ in range(5):
+                validate_public_url(current, self._settings.allow_fake_ip_dns)
+                response = httpx.get(
+                    current,
+                    headers={"User-Agent": _DOUYIN_MOBILE_USER_AGENT},
+                    timeout=20,
+                    follow_redirects=False,
+                )
+                location = response.headers.get("location")
+                if location and response.is_redirect:
+                    current = urljoin(current, location)
+                    hostname = (urlparse(current).hostname or "").lower()
+                    if hostname not in _DOUYIN_HOSTS and not hostname.endswith(
+                        ".douyin.com"
+                    ):
+                        raise ValueError("抖音短链接跳转到了未知站点")
+                    video_id = self._douyin_video_id(current)
+                    if video_id:
+                        break
+                    continue
+                response.raise_for_status()
+                video_id = self._douyin_video_id(str(response.url))
+                if not video_id:
+                    match = re.search(r"(?:video|note)[/\\\"]+(\d{10,})", response.text)
+                    video_id = match.group(1) if match else None
+                break
+        if not video_id:
+            raise ValueError("无法从抖音链接识别作品 ID")
+
+        share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
+        response = httpx.get(
+            share_url,
+            headers={"User-Agent": _DOUYIN_MOBILE_USER_AGENT},
+            timeout=20,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        router_script = next(
+            (
+                script
+                for script in soup.find_all("script")
+                if (script.string or script.get_text())
+                .lstrip()
+                .startswith("window._ROUTER_DATA =")
+            ),
+            None,
+        )
+        if not router_script:
+            raise ValueError("匿名分享页没有内嵌作品数据")
+        script_text = (router_script.string or router_script.get_text()).strip()
+        router_data = json.loads(script_text.split("=", 1)[1].strip().rstrip(";"))
+        loader_data = router_data.get("loaderData") or {}
+        page_data = next(
+            (
+                value
+                for value in loader_data.values()
+                if isinstance(value, dict)
+                and isinstance(value.get("videoInfoRes"), dict)
+            ),
+            None,
+        )
+        item_list = ((page_data or {}).get("videoInfoRes") or {}).get("item_list") or []
+        item = next(
+            (
+                value
+                for value in item_list
+                if isinstance(value, dict) and str(value.get("aweme_id")) == video_id
+            ),
+            item_list[0] if item_list else None,
+        )
+        if not isinstance(item, dict):
+            raise ValueError("匿名分享页没有返回作品详情")
+
+        media_id = uuid.uuid4().hex
+        specs: dict[str, DownloadSpec] = {}
+        video = item.get("video") if isinstance(item.get("video"), dict) else {}
+        play_urls = (video.get("play_addr") or {}).get("url_list") or []
+        play_url = next(
+            (str(value) for value in play_urls if str(value).startswith("http")), None
+        )
+        width = _as_int(video.get("width"))
+        height = _as_int(video.get("height"))
+        if play_url:
+            ratio_match = re.search(r"(?:[?&])ratio=([^&]+)", play_url)
+            resolution = (
+                ratio_match.group(1)
+                if ratio_match
+                else f"{width}x{height}"
+                if width and height
+                else None
+            )
+            option = MediaOption(
+                id="video:douyin-share",
+                kind=AssetKind.VIDEO,
+                label="抖音公开视频 · MP4",
+                extension="mp4",
+                resolution=resolution,
+            )
+            specs[option.id] = DownloadSpec(option=option, direct_url=play_url)
+
+        image_sources: list[tuple[str, str]] = []
+        cover_urls = (video.get("cover") or {}).get("url_list") or []
+        cover_url = next(
+            (str(value) for value in cover_urls if str(value).startswith("http")), None
+        )
+        if cover_url:
+            image_sources.append(("cover", cover_url))
+        for index, image in enumerate(item.get("images") or [], start=1):
+            if not isinstance(image, dict):
+                continue
+            urls = image.get("url_list") or image.get("download_url_list") or []
+            image_url = next(
+                (str(value) for value in urls if str(value).startswith("http")), None
+            )
+            if image_url:
+                image_sources.append((str(index), image_url))
+        for label, image_url in image_sources[:20]:
+            extension = urlparse(image_url).path.rsplit(".", 1)[-1].lower()
+            if extension not in {"jpg", "jpeg", "png", "webp", "avif"}:
+                extension = "jpg"
+            option = MediaOption(
+                id=f"image:{label}",
+                kind=AssetKind.IMAGE,
+                label="最高质量封面" if label == "cover" else f"图片 {label}",
+                extension=extension,
+            )
+            specs[option.id] = DownloadSpec(option=option, direct_url=image_url)
+        if not specs:
+            raise ValueError("匿名分享页没有返回视频或图片地址")
+
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        title = str(item.get("desc") or "").strip() or f"抖音作品 {video_id}"
+        media = MediaInfo(
+            media_id=media_id,
+            source_url=url,
+            title=title,
+            creator=str(author.get("nickname") or "").strip() or None,
+            platform="Douyin",
+            duration_seconds=(_as_int(video.get("duration")) or 0) // 1000 or None,
+            thumbnail_url=cover_url,
+            options=[spec.option for spec in specs.values()],
+            warnings=["已通过抖音匿名分享页直接解析，全程不读取或发送 Cookie。"],
+        )
+        return ResolvedEntry(media=media, specs=specs, created_at=time.time())
 
     def _resolve_direct_url(self, url: str) -> ResolvedEntry | None:
         path = urlparse(url).path
@@ -169,10 +336,7 @@ class ResolverService:
         self._prune()
         return self._cache.get(media_id)
 
-    def _base_ytdlp_options(
-        self,
-        cookie_browser: str | None = None,
-    ) -> dict[str, Any]:
+    def _base_ytdlp_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -188,31 +352,10 @@ class ResolverService:
                 )
             },
         }
-        if self._settings.cookie_file and self._settings.cookie_file.is_file():
-            options["cookiefile"] = str(self._settings.cookie_file)
-        elif cookie_browser:
-            options["cookiesfrombrowser"] = (cookie_browser,)
         return options
 
-    def _resolve_with_browser_fallback(self, url: str) -> ResolvedEntry:
-        errors: list[str] = []
-        for browser in ("edge", "chrome", "firefox"):
-            try:
-                return self._resolve_with_ytdlp(url, browser)
-            except (yt_dlp.utils.DownloadError, FileNotFoundError) as exc:
-                errors.append(f"{browser}: {clean_ytdlp_error(exc)}")
-        raise yt_dlp.utils.DownloadError(
-            "无法读取 Edge、Chrome 或 Firefox 的登录状态；"
-            "请先在浏览器登录对应平台并完全关闭浏览器后重试。 "
-            + " | ".join(errors[-2:])
-        )
-
-    def _resolve_with_ytdlp(
-        self,
-        url: str,
-        cookie_browser: str | None = None,
-    ) -> ResolvedEntry:
-        with yt_dlp.YoutubeDL(self._base_ytdlp_options(cookie_browser)) as ydl:
+    def _resolve_with_ytdlp(self, url: str) -> ResolvedEntry:
+        with yt_dlp.YoutubeDL(self._base_ytdlp_options()) as ydl:
             raw_info = ydl.extract_info(url, download=False)
 
         if not raw_info:
@@ -253,10 +396,14 @@ class ResolverService:
             )
             current = video_candidates.get(key)
             current_score = (
-                _as_int(current.get("filesize") or current.get("filesize_approx"))
-                or 0,
-                _as_float(current.get("tbr")) or 0,
-            ) if current else (-1, -1)
+                (
+                    _as_int(current.get("filesize") or current.get("filesize_approx"))
+                    or 0,
+                    _as_float(current.get("tbr")) or 0,
+                )
+                if current
+                else (-1, -1)
+            )
             if score >= current_score:
                 video_candidates[key] = item
 
@@ -279,9 +426,15 @@ class ResolverService:
             has_audio = item.get("acodec") not in {None, "none"}
             size = _as_int(item.get("filesize") or item.get("filesize_approx"))
             resolution = (
-                f"{width}×{height}" if width and height else f"{height}p" if height else None
+                f"{width}×{height}"
+                if width and height
+                else f"{height}p"
+                if height
+                else None
             )
-            label_parts = [f"{height}p" if height else str(item.get("format_note") or "视频")]
+            label_parts = [
+                f"{height}p" if height else str(item.get("format_note") or "视频")
+            ]
             if fps and fps > 30:
                 label_parts.append(f"{fps:g}fps")
             if str(item.get("dynamic_range") or "SDR") != "SDR":
@@ -376,7 +529,9 @@ class ResolverService:
 
         thumbnail = info.get("thumbnail")
         if not thumbnail:
-            thumbnail_items = [item for item in info.get("thumbnails") or [] if item.get("url")]
+            thumbnail_items = [
+                item for item in info.get("thumbnails") or [] if item.get("url")
+            ]
             if thumbnail_items:
                 thumbnail = thumbnail_items[-1]["url"]
         if thumbnail:
@@ -394,17 +549,14 @@ class ResolverService:
         if not specs:
             raise yt_dlp.utils.DownloadError("没有找到可下载资源")
 
-        if cookie_browser:
-            for spec in specs.values():
-                spec.cookie_browser = cookie_browser
-            warnings.append(f"本次使用 {cookie_browser.title()} 的本机登录状态解析。")
-
         media = MediaInfo(
             media_id=media_id,
             source_url=str(info.get("webpage_url") or url),
             title=str(info.get("title") or "未命名媒体"),
             creator=info.get("uploader") or info.get("creator") or info.get("channel"),
-            platform=str(info.get("extractor_key") or info.get("extractor") or "通用解析"),
+            platform=str(
+                info.get("extractor_key") or info.get("extractor") or "通用解析"
+            ),
             duration_seconds=_as_int(info.get("duration")),
             thumbnail_url=str(thumbnail) if thumbnail else None,
             options=[spec.option for spec in specs.values()],
@@ -440,7 +592,9 @@ class ResolverService:
         image_urls: list[str] = []
         for tag in soup.find_all("meta"):
             key = tag.get("property") or tag.get("name")
-            if key in {"og:image", "og:image:url", "twitter:image"} and tag.get("content"):
+            if key in {"og:image", "og:image:url", "twitter:image"} and tag.get(
+                "content"
+            ):
                 candidate = urljoin(str(response.url), str(tag["content"]))
                 if candidate not in image_urls:
                     image_urls.append(candidate)
@@ -492,6 +646,8 @@ class ResolverService:
 
     def _prune(self) -> None:
         cutoff = time.time() - self._settings.cache_ttl_seconds
-        expired = [key for key, value in self._cache.items() if value.created_at < cutoff]
+        expired = [
+            key for key, value in self._cache.items() if value.created_at < cutoff
+        ]
         for key in expired:
             self._cache.pop(key, None)

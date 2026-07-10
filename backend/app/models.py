@@ -13,7 +13,6 @@ class AssetKind(str, Enum):
 
 class ResolveRequest(BaseModel):
     url: str = Field(min_length=8, max_length=4096)
-    use_browser_cookies: bool = False
 
 
 class MediaOption(BaseModel):

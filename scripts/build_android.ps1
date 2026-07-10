@@ -1,6 +1,6 @@
 param(
     [string]$ApiBaseUrl = "http://127.0.0.1:8787",
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [string]$UpdateManifestUrl = ""
 )
 

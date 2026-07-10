@@ -1,10 +1,12 @@
-import importlib
+import json
 
+import httpx
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.main import app
 from app.services.extractor import (
-    BrowserCookiesRequiredError,
+    ResolverService,
     browser_cookies_required,
     clean_ytdlp_error,
 )
@@ -20,9 +22,7 @@ def test_health() -> None:
 
 
 def test_rejects_localhost() -> None:
-    response = client.post(
-        "/api/v1/resolve", json={"url": "http://127.0.0.1/private"}
-    )
+    response = client.post("/api/v1/resolve", json={"url": "http://127.0.0.1/private"})
     assert response.status_code == 400
 
 
@@ -30,7 +30,7 @@ def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.0.4"
+    assert payload["version"] == "1.0.5"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
 
 
@@ -45,19 +45,57 @@ def test_cleans_douyin_terminal_error() -> None:
     assert browser_cookies_required(cleaned)
 
 
-def test_cookie_requirement_returns_actionable_code(monkeypatch) -> None:
-    main_module = importlib.import_module("app.main")
-
-    async def requires_cookies(*_args, **_kwargs):
-        raise BrowserCookiesRequiredError("抖音需要浏览器 Cookie")
-
-    monkeypatch.setattr(main_module.resolver, "resolve", requires_cookies)
-    response = client.post(
-        "/api/v1/resolve",
-        json={"url": "https://www.douyin.com/video/7658650507234212965"},
-    )
-    assert response.status_code == 428
-    assert response.json()["detail"] == {
-        "code": "browser_cookies_required",
-        "message": "抖音需要浏览器 Cookie",
+def test_douyin_share_parser_does_not_send_cookies(monkeypatch) -> None:
+    video_id = "7658650507234212965"
+    router_data = {
+        "loaderData": {
+            "video_(id)/page": {
+                "videoInfoRes": {
+                    "item_list": [
+                        {
+                            "aweme_id": video_id,
+                            "desc": "无 Cookie 测试",
+                            "author": {"nickname": "浪白"},
+                            "video": {
+                                "width": 1080,
+                                "height": 1920,
+                                "duration": 18000,
+                                "play_addr": {
+                                    "url_list": [
+                                        "https://media.example/video.mp4?ratio=720p"
+                                    ]
+                                },
+                                "cover": {
+                                    "url_list": ["https://media.example/cover.webp"]
+                                },
+                            },
+                        }
+                    ]
+                }
+            }
+        }
     }
+    html = (
+        "<html><script>window._ROUTER_DATA = "
+        + json.dumps(router_data)
+        + ";</script></html>"
+    )
+
+    def fake_get(url, *, headers, **_kwargs):
+        assert "cookie" not in {key.lower() for key in headers}
+        return httpx.Response(
+            200,
+            text=html,
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("app.services.extractor.httpx.get", fake_get)
+    entry = ResolverService(settings)._resolve_douyin_share(
+        f"https://www.douyin.com/video/{video_id}"
+    )
+    assert entry.media.title == "无 Cookie 测试"
+    assert entry.media.creator == "浪白"
+    assert entry.media.duration_seconds == 18
+    assert {option.kind.value for option in entry.media.options} == {"video", "image"}
+    assert entry.media.options[0].resolution == "720p"
+    assert "不读取或发送 Cookie" in entry.media.warnings[0]
