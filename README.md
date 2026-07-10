@@ -14,9 +14,9 @@
 - Windows Setup 内置本地解析服务、FFmpeg 和 aria2；Android APK 内置 Python、yt-dlp、QuickJS、FFmpeg 和 aria2；iOS IPA 内嵌 Python 与 yt-dlp。
 - 自适应桌面侧边栏和移动端底部导航，支持深色、浅色、跟随系统和桌面端默认保存路径。
 
-> 网站接口、登录策略和风控会变化，因此无法承诺“所有网站永久适配”。是否支持应以实际链接测试为准。项目只处理公开、无 DRM 且用户有权保存的内容，不绕过付费、私密、地区限制或访问控制。需要登录的平台只有在用户主动启用后才读取本机浏览器 Cookie。
+> 网站接口、登录策略和风控会变化，因此无法承诺“所有网站永久适配”。是否支持应以实际链接测试为准。项目只处理公开、无 DRM 且用户有权保存的内容，不绕过付费、私密、地区限制或访问控制。客户端不读取浏览器 Cookie，需要登录的内容不属于匿名解析范围。
 
-抖音提示需要新鲜 Cookie 时，Windows 客户端会先征求本机读取权限，再依次尝试 Edge、Chrome 和 Firefox 并自动重试；Cookie 不会上传。若浏览器尚未生成所需 Cookie，请先在浏览器打开该链接并正常播放一次。
+抖音公开作品优先通过移动匿名分享页的 `_ROUTER_DATA` 直接解析，Windows、Android 与 iOS 均不读取 Cookie；专用入口失效时会明确提示更新解析器。
 
 ## 目录
 
@@ -46,7 +46,7 @@ Docker 部署：
 docker compose up -d --build
 ```
 
-生产环境应限制 `MEDIA_HARBOR_CORS_ORIGINS`，并在反向代理增加认证、限速、上传大小限制和出口隔离。登录 Cookie 只能在确认拥有内容访问权时通过 `MEDIA_HARBOR_COOKIE_FILE` 配置，且不能提交到仓库。
+生产环境应限制 `MEDIA_HARBOR_CORS_ORIGINS`，并在反向代理增加认证、限速、上传大小限制和出口隔离。解析器仅处理无需登录的公开内容，不配置或读取浏览器 Cookie。
 
 ## 构建
 
@@ -54,7 +54,7 @@ Windows Setup（需要 Flutter、Visual Studio C++ 桌面工作负载和 Inno Se
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.0.4" `
+  -Version "1.0.5" `
   -UpdateManifestUrl "https://github.com/你的账号/langbai-resolver/releases/latest/download/update-manifest.json"
 ```
 
@@ -78,7 +78,7 @@ UPDATE_MANIFEST_URL="https://github.com/你的账号/langbai-resolver/releases/l
 
 ## GitHub Release 与自动更新
 
-推送 `v1.0.4` 形式的标签，`release.yml` 会自动生成并发布：
+推送 `v1.0.5` 形式的标签，`release.yml` 会自动生成并发布：
 
 - `langbai-resolver-Setup.exe`
 - `langbai-resolver-Android.apk`

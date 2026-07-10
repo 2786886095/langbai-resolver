@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -45,12 +44,9 @@ class _ParserPageState extends State<ParserPage> {
   bool _resolving = false;
   bool _saving = false;
   double _saveProgress = 0;
-  bool _useBrowserCookies = false;
   String? _error;
 
   bool get _usesLocalParser => LocalMediaService.isSupported;
-  bool get _canUseBrowserCookies =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   @override
   void initState() {
@@ -74,11 +70,6 @@ class _ParserPageState extends State<ParserPage> {
       final preferences = await SharedPreferences.getInstance();
       final saved = preferences.getString('api_base_url')?.trim();
       if (!mounted) return;
-      final useBrowserCookies =
-          preferences.getBool('use_browser_cookies') ?? false;
-      if (useBrowserCookies != _useBrowserCookies) {
-        setState(() => _useBrowserCookies = useBrowserCookies);
-      }
       if (saved == null || saved.isEmpty || saved == _api.baseUrl) return;
       _api.close();
       setState(() {
@@ -118,14 +109,10 @@ class _ParserPageState extends State<ParserPage> {
       _selected = null;
       _job = null;
     });
-    var retryWithBrowserCookies = false;
     try {
       final media = _usesLocalParser
           ? await LocalMediaService.instance.resolve(url)
-          : await _api.resolve(
-              url,
-              useBrowserCookies: _useBrowserCookies,
-            );
+          : await _api.resolve(url);
       if (!mounted) return;
       final availableKinds = AssetKind.values
           .where((kind) => media.options.any((option) => option.kind == kind))
@@ -139,20 +126,7 @@ class _ParserPageState extends State<ParserPage> {
         _selected = media.options.firstWhere((option) => option.kind == kind);
       });
     } on ApiException catch (error) {
-      if (error.code == 'browser_cookies_required' &&
-          _canUseBrowserCookies &&
-          !_useBrowserCookies) {
-        retryWithBrowserCookies = await _confirmBrowserCookieAccess(
-          error.message,
-        );
-        if (retryWithBrowserCookies && mounted) {
-          await _setUseBrowserCookies(true);
-        } else if (mounted) {
-          setState(() => _error = error.message);
-        }
-      } else if (mounted) {
-        setState(() => _error = error.message);
-      }
+      if (mounted) setState(() => _error = error.message);
     } on LocalMediaException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on TimeoutException {
@@ -162,46 +136,6 @@ class _ParserPageState extends State<ParserPage> {
     } finally {
       if (mounted) setState(() => _resolving = false);
     }
-    if (retryWithBrowserCookies && mounted) {
-      await _resolve();
-    }
-  }
-
-  Future<bool> _confirmBrowserCookieAccess(String message) async {
-    if (!mounted) return false;
-    return await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('抖音需要新鲜 Cookie'),
-            content: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(message),
-                  const SizedBox(height: 12),
-                  const Text(
-                    '将依次尝试 Edge、Chrome 和 Firefox。Cookie 只交给电脑里的本地解析器，'
-                    '不会发送到 langbai 服务器。若重试仍失败，请先用浏览器打开该链接并正常播放一次。',
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('暂不允许'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('允许并自动重试'),
-              ),
-            ],
-          ),
-        ) ??
-        false;
   }
 
   Future<void> _startDownload() async {
@@ -337,12 +271,6 @@ class _ParserPageState extends State<ParserPage> {
     });
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString('api_base_url', normalized);
-  }
-
-  Future<void> _setUseBrowserCookies(bool value) async {
-    setState(() => _useBrowserCookies = value);
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setBool('use_browser_cookies', value);
   }
 
   Future<void> _showSettings() async {
@@ -532,22 +460,6 @@ class _ParserPageState extends State<ParserPage> {
                 );
               },
             ),
-            if (_canUseBrowserCookies) ...[
-              const SizedBox(height: 8),
-              CheckboxListTile(
-                value: _useBrowserCookies,
-                onChanged: _resolving || _saving
-                    ? null
-                    : (value) => _setUseBrowserCookies(value ?? false),
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                dense: true,
-                title: const Text('使用本机浏览器登录状态'),
-                subtitle: const Text(
-                  '仅在解析需要登录或 Cookie 的平台时启用；将依次尝试 Edge、Chrome 和 Firefox。',
-                ),
-              ),
-            ],
             const SizedBox(height: 14),
             Text(
               '仅用于你有权保存的公开、无 DRM 内容。平台规则变化时需更新服务端解析器。',

@@ -19,13 +19,14 @@ class Settings:
     job_ttl_seconds: int
     max_concurrent_jobs: int
     cors_origins: tuple[str, ...]
-    cookie_file: Path | None
     ffmpeg_location: Path | None
     allow_fake_ip_dns: bool
     jamendo_client_id: str | None = None
     audius_api_key: str | None = None
-    update_version: str = "1.0.4"
-    update_notes: str = "Android 与 iOS 本机解析，多源音乐搜索，Windows 浏览器 Cookie 与 Fake-IP 兼容"
+    update_version: str = "1.0.5"
+    update_notes: str = (
+        "抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需浏览器 Cookie"
+    )
     update_windows_url: str = ""
     update_windows_sha256: str = ""
     update_android_url: str = ""
@@ -42,9 +43,9 @@ class Settings:
         return cls(
             host=os.getenv("MEDIA_HARBOR_HOST", "0.0.0.0"),
             port=int(os.getenv("MEDIA_HARBOR_PORT", "8787")),
-            download_dir=Path(
-                os.getenv("MEDIA_HARBOR_DOWNLOAD_DIR", "./downloads")
-            ).expanduser().resolve(),
+            download_dir=Path(os.getenv("MEDIA_HARBOR_DOWNLOAD_DIR", "./downloads"))
+            .expanduser()
+            .resolve(),
             cache_ttl_seconds=max(
                 60, int(os.getenv("MEDIA_HARBOR_CACHE_TTL_SECONDS", "3600"))
             ),
@@ -55,7 +56,6 @@ class Settings:
                 1, int(os.getenv("MEDIA_HARBOR_MAX_CONCURRENT_JOBS", "2"))
             ),
             cors_origins=origins or ("*",),
-            cookie_file=_optional_path("MEDIA_HARBOR_COOKIE_FILE"),
             ffmpeg_location=_optional_path("MEDIA_HARBOR_FFMPEG_LOCATION"),
             allow_fake_ip_dns=os.getenv(
                 "MEDIA_HARBOR_ALLOW_FAKE_IP_DNS", "false"
@@ -63,10 +63,10 @@ class Settings:
             in {"1", "true", "yes", "on"},
             jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
             audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.4").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.5").strip(),
             update_notes=os.getenv(
                 "LANGBAI_UPDATE_NOTES",
-                "Android 与 iOS 本机解析，多源音乐搜索，Windows 浏览器 Cookie 与 Fake-IP 兼容",
+                "抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需浏览器 Cookie",
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(

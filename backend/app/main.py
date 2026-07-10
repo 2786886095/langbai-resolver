@@ -26,7 +26,6 @@ from app.models import (
     UpdatePlatformRelease,
 )
 from app.services.extractor import (
-    BrowserCookiesRequiredError,
     ResolverService,
     clean_ytdlp_error,
 )
@@ -37,7 +36,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.4",
+    version="1.0.5",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(
@@ -89,28 +88,21 @@ def update_manifest() -> UpdateManifest:
             "linux": UpdatePlatformRelease(url=settings.update_web_url),
         },
     )
+
+
 @app.post("/api/v1/resolve", response_model=MediaInfo)
 async def resolve_media(request: ResolveRequest) -> MediaInfo:
     try:
-        return await resolver.resolve(
-            request.url,
-            use_browser_cookies=request.use_browser_cookies,
-        )
+        return await resolver.resolve(request.url)
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except BrowserCookiesRequiredError as exc:
-        raise HTTPException(
-            status_code=428,
-            detail={
-                "code": "browser_cookies_required",
-                "message": clean_ytdlp_error(exc),
-            },
-        ) from exc
     except yt_dlp.utils.DownloadError as exc:
         message = clean_ytdlp_error(exc)
         raise HTTPException(status_code=422, detail=message[:500]) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"解析失败：{str(exc)[:400]}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"解析失败：{str(exc)[:400]}"
+        ) from exc
 
 
 @app.post("/api/v1/jobs", response_model=DownloadJob, status_code=202)
@@ -148,7 +140,9 @@ async def sniff_page(request: SniffRequest) -> SniffResponse:
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"网页嗅探失败：{str(exc)[:400]}") from exc
+        raise HTTPException(
+            status_code=422, detail=f"网页嗅探失败：{str(exc)[:400]}"
+        ) from exc
 
 
 @app.post("/api/v1/tools/process", response_model=DownloadJob, status_code=202)
@@ -159,7 +153,9 @@ async def process_local_media(
     quality: int = Form(78),
 ) -> DownloadJob:
     suffix = Path(file.filename or "media.bin").suffix.lower()
-    if len(suffix) > 12 or not all(character.isalnum() or character == "." for character in suffix):
+    if len(suffix) > 12 or not all(
+        character.isalnum() or character == "." for character in suffix
+    ):
         suffix = ".bin"
     upload_dir = settings.download_dir / "_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +184,9 @@ async def process_local_media(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         upload_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"创建工具任务失败：{str(exc)[:300]}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"创建工具任务失败：{str(exc)[:300]}"
+        ) from exc
     finally:
         await file.close()
 
@@ -217,7 +215,9 @@ async def create_torrent_file(file: UploadFile = File(...)) -> DownloadJob:
             while chunk := await file.read(512 * 1024):
                 written += len(chunk)
                 if written > 32 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="种子文件不能超过 32 MB")
+                    raise HTTPException(
+                        status_code=413, detail="种子文件不能超过 32 MB"
+                    )
                 output.write(chunk)
         return jobs.create_torrent_file(upload_path)
     except HTTPException:
@@ -225,7 +225,9 @@ async def create_torrent_file(file: UploadFile = File(...)) -> DownloadJob:
         raise
     except Exception as exc:
         upload_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"创建种子任务失败：{str(exc)[:300]}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"创建种子任务失败：{str(exc)[:300]}"
+        ) from exc
     finally:
         await file.close()
 
@@ -249,7 +251,9 @@ async def search_music(
     try:
         return await asyncio.to_thread(music.search, q)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"音乐来源查询失败：{str(exc)[:300]}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"音乐来源查询失败：{str(exc)[:300]}"
+        ) from exc
 
 
 @app.get("/api/v1/music/{identifier}/files", response_model=list[MusicFile])
@@ -259,7 +263,9 @@ async def music_files(identifier: str) -> list[MusicFile]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"音乐文件查询失败：{str(exc)[:300]}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"音乐文件查询失败：{str(exc)[:300]}"
+        ) from exc
 
 
 if __name__ == "__main__":

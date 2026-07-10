@@ -103,6 +103,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun resolveLocally(url: String): Map<String, Any?> {
+        if (isDouyinUrl(url)) {
+            return resolveDouyinShare(url)
+        }
         ensureEngine()
         val request = YoutubeDLRequest(url)
             .addOption("--dump-single-json")
@@ -167,8 +170,158 @@ class MainActivity : FlutterActivity() {
             "duration_seconds" to positiveInt(effective, "duration"),
             "thumbnail_url" to thumbnail,
             "options" to options,
-            "warnings" to listOf("由 Android 本机解析，媒体链接和 Cookie 不会发送到 langbai 服务器。"),
+            "warnings" to listOf("由 Android 本机解析，不读取浏览器 Cookie，媒体链接不会发送到 langbai 服务器。"),
         )
+    }
+
+    private fun isDouyinUrl(value: String): Boolean {
+        val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
+        return host == "douyin.com" || host.endsWith(".douyin.com") ||
+            host == "iesdouyin.com" || host.endsWith(".iesdouyin.com")
+    }
+
+    private fun douyinVideoId(value: String): String? {
+        Regex("/(?:video|note)/(\\d{10,})").find(value)?.let { return it.groupValues[1] }
+        val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
+        for (key in listOf("modal_id", "aweme_id", "item_id")) {
+            uri.getQueryParameter(key)?.takeIf { it.matches(Regex("\\d{10,}")) }?.let { return it }
+        }
+        return null
+    }
+
+    private fun resolveDouyinShare(sourceUrl: String): Map<String, Any?> {
+        var videoId = douyinVideoId(sourceUrl)
+        var current = sourceUrl
+        repeat(5) {
+            if (videoId != null) return@repeat
+            val connection = URL(current).openConnection() as HttpURLConnection
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 20_000
+            connection.setRequestProperty("User-Agent", DOUYIN_MOBILE_USER_AGENT)
+            connection.connect()
+            val location = connection.getHeaderField("Location")
+            val responseCode = connection.responseCode
+            if (responseCode in 300..399 && !location.isNullOrBlank()) {
+                current = URL(URL(current), location).toString()
+                require(isDouyinUrl(current)) { "抖音短链接跳转到了未知站点" }
+                videoId = douyinVideoId(current)
+            } else {
+                require(responseCode in 200..299) { "抖音短链接返回 $responseCode" }
+                val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                videoId = douyinVideoId(connection.url.toString())
+                    ?: Regex("(?:video|note)[/\\\\\"]+(\\d{10,})").find(html)?.groupValues?.get(1)
+            }
+            connection.disconnect()
+        }
+        require(!videoId.isNullOrBlank()) { "无法从抖音链接识别作品 ID" }
+
+        val shareUrl = "https://www.iesdouyin.com/share/video/$videoId/"
+        val connection = URL(shareUrl).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 25_000
+        connection.setRequestProperty("User-Agent", DOUYIN_MOBILE_USER_AGENT)
+        connection.connect()
+        require(connection.responseCode in 200..299) {
+            "抖音匿名分享页返回 ${connection.responseCode}"
+        }
+        val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        connection.disconnect()
+        val marker = "window._ROUTER_DATA ="
+        val markerIndex = html.indexOf(marker)
+        require(markerIndex >= 0) { "匿名分享页没有内嵌作品数据" }
+        val jsonStart = html.indexOf('{', markerIndex + marker.length)
+        val scriptEnd = html.indexOf("</script>", jsonStart)
+        require(jsonStart >= 0 && scriptEnd > jsonStart) { "匿名分享页作品数据不完整" }
+        val routerData = JSONObject(html.substring(jsonStart, scriptEnd).trim().removeSuffix(";"))
+        val loaderData = routerData.optJSONObject("loaderData") ?: error("匿名分享页缺少作品数据")
+        var pageData: JSONObject? = null
+        val loaderKeys = loaderData.keys()
+        while (loaderKeys.hasNext()) {
+            val candidate = loaderData.optJSONObject(loaderKeys.next()) ?: continue
+            if (candidate.optJSONObject("videoInfoRes") != null) {
+                pageData = candidate
+                break
+            }
+        }
+        val itemList = pageData?.optJSONObject("videoInfoRes")?.optJSONArray("item_list")
+            ?: error("匿名分享页没有返回作品详情")
+        var item: JSONObject? = null
+        for (index in 0 until itemList.length()) {
+            val candidate = itemList.optJSONObject(index) ?: continue
+            if (text(candidate, "aweme_id") == videoId || item == null) item = candidate
+            if (text(candidate, "aweme_id") == videoId) break
+        }
+        val detail = item ?: error("匿名分享页没有返回作品详情")
+        val video = detail.optJSONObject("video") ?: JSONObject()
+        val specs = linkedMapOf<String, LocalOption>()
+        val options = mutableListOf<Map<String, Any?>>()
+        val playUrl = firstHttpUrl(video.optJSONObject("play_addr")?.optJSONArray("url_list"))
+        val width = positiveInt(video, "width")
+        val height = positiveInt(video, "height")
+        if (playUrl != null) {
+            val resolution = Uri.parse(playUrl).getQueryParameter("ratio")
+                ?: if (width != null && height != null) "${width}x$height" else null
+            val id = "video:douyin-share"
+            specs[id] = LocalOption("video", "mp4", directUrl = playUrl)
+            options += optionMap(
+                id = id,
+                kind = "video",
+                label = "抖音公开视频 · MP4",
+                extension = "mp4",
+                resolution = resolution,
+            )
+        }
+        val coverUrl = firstHttpUrl(video.optJSONObject("cover")?.optJSONArray("url_list"))
+        if (coverUrl != null) {
+            val extension = extensionFromUrl(coverUrl, "jpg")
+            specs["image:cover"] = LocalOption("image", extension, directUrl = coverUrl)
+            options += optionMap(
+                id = "image:cover",
+                kind = "image",
+                label = "最高质量封面",
+                extension = extension,
+            )
+        }
+        val images = detail.optJSONArray("images")
+        if (images != null) {
+            for (index in 0 until minOf(images.length(), 20)) {
+                val image = images.optJSONObject(index) ?: continue
+                val imageUrl = firstHttpUrl(
+                    image.optJSONArray("url_list") ?: image.optJSONArray("download_url_list"),
+                ) ?: continue
+                val id = "image:${index + 1}"
+                val extension = extensionFromUrl(imageUrl, "jpg")
+                specs[id] = LocalOption("image", extension, directUrl = imageUrl)
+                options += optionMap(id, "image", "图片 ${index + 1}", extension)
+            }
+        }
+        require(options.isNotEmpty()) { "匿名分享页没有返回视频或图片地址" }
+        val mediaId = UUID.randomUUID().toString()
+        val title = text(detail, "desc") ?: "抖音作品 $videoId"
+        val author = detail.optJSONObject("author")
+        resolved[mediaId] = LocalMedia(sourceUrl, title, specs)
+        return mapOf(
+            "media_id" to mediaId,
+            "source_url" to sourceUrl,
+            "title" to title,
+            "creator" to author?.let { text(it, "nickname") },
+            "platform" to "Douyin",
+            "duration_seconds" to positiveInt(video, "duration")?.div(1000),
+            "thumbnail_url" to coverUrl,
+            "options" to options,
+            "warnings" to listOf("已通过抖音匿名分享页直接解析，全程不读取或发送 Cookie。"),
+        )
+    }
+
+    private fun firstHttpUrl(values: JSONArray?): String? {
+        if (values == null) return null
+        for (index in 0 until values.length()) {
+            val value = values.optString(index).trim()
+            if (value.startsWith("http://") || value.startsWith("https://")) return value
+        }
+        return null
     }
 
     private fun effectiveEntry(root: JSONObject): JSONObject {
@@ -608,6 +761,8 @@ class MainActivity : FlutterActivity() {
     private data class PublishedFile(val name: String, val location: String)
 
     companion object {
+        private const val DOUYIN_MOBILE_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "avif", "gif")
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac")
     }

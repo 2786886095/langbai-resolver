@@ -20,7 +20,6 @@ def test_image_compression_job(tmp_path) -> None:
             job_ttl_seconds=3600,
             max_concurrent_jobs=1,
             cors_origins=("*",),
-            cookie_file=None,
             ffmpeg_location=None,
             allow_fake_ip_dns=False,
         )
@@ -57,7 +56,6 @@ def test_multi_source_transfer_normalizes_mirrors(tmp_path) -> None:
             job_ttl_seconds=3600,
             max_concurrent_jobs=1,
             cors_origins=("*",),
-            cookie_file=None,
             ffmpeg_location=None,
             allow_fake_ip_dns=False,
         )

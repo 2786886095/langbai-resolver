@@ -13,7 +13,7 @@ import httpx
 from app.models import MusicFile, MusicSearchResult
 
 
-_USER_AGENT = "langbai-resolver/1.0.4 (https://github.com/2786886095/langbai-resolver)"
+_USER_AGENT = "langbai-resolver/1.0.5 (https://github.com/2786886095/langbai-resolver)"
 
 
 def _plain_text(value: object) -> str | None:
@@ -153,7 +153,9 @@ class OpenMusicService:
             "sort[]": "downloads desc",
         }
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
-            response = client.get("https://archive.org/advancedsearch.php", params=params)
+            response = client.get(
+                "https://archive.org/advancedsearch.php", params=params
+            )
             response.raise_for_status()
         results: list[MusicSearchResult] = []
         for item in response.json().get("response", {}).get("docs", []):
@@ -181,7 +183,9 @@ class OpenMusicService:
     def _search_musicbrainz(self, query: str, limit: int) -> list[MusicSearchResult]:
         params = {"query": query, "fmt": "json", "limit": str(limit), "dismax": "true"}
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
-            response = client.get("https://musicbrainz.org/ws/2/recording/", params=params)
+            response = client.get(
+                "https://musicbrainz.org/ws/2/recording/", params=params
+            )
             response.raise_for_status()
         results: list[MusicSearchResult] = []
         for item in response.json().get("recordings", []):
@@ -205,7 +209,9 @@ class OpenMusicService:
                     source="musicbrainz",
                     source_label="MusicBrainz",
                     can_download=False,
-                    duration_seconds=(int(item["length"]) // 1000) if item.get("length") else None,
+                    duration_seconds=(int(item["length"]) // 1000)
+                    if item.get("length")
+                    else None,
                 )
             )
         return results
@@ -235,7 +241,11 @@ class OpenMusicService:
                     title=str(item.get("trackName") or identifier),
                     creator=str(item.get("artistName") or "") or None,
                     year=released[:4] or None,
-                    item_url=str(item.get("trackViewUrl") or item.get("collectionViewUrl") or "https://music.apple.com"),
+                    item_url=str(
+                        item.get("trackViewUrl")
+                        or item.get("collectionViewUrl")
+                        or "https://music.apple.com"
+                    ),
                     source="apple_music",
                     source_label="Apple Music",
                     can_download=False,
@@ -270,8 +280,12 @@ class OpenMusicService:
                 continue
             user = item.get("user") if isinstance(item.get("user"), dict) else {}
             permalink = str(item.get("permalink") or "")
-            preview = item.get("preview") if isinstance(item.get("preview"), dict) else {}
-            download = item.get("download") if isinstance(item.get("download"), dict) else {}
+            preview = (
+                item.get("preview") if isinstance(item.get("preview"), dict) else {}
+            )
+            download = (
+                item.get("download") if isinstance(item.get("download"), dict) else {}
+            )
             can_download = bool(item.get("is_downloadable") and download.get("url"))
             results.append(
                 MusicSearchResult(
@@ -279,7 +293,9 @@ class OpenMusicService:
                     title=str(item.get("title") or identifier),
                     creator=str(user.get("name") or user.get("handle") or "") or None,
                     year=str(item.get("release_date") or "")[:4] or None,
-                    item_url=f"https://audius.co{permalink}" if permalink else "https://audius.co",
+                    item_url=f"https://audius.co{permalink}"
+                    if permalink
+                    else "https://audius.co",
                     source="audius",
                     source_label="Audius",
                     can_download=can_download,
@@ -290,7 +306,9 @@ class OpenMusicService:
                     album=(item.get("album_backlink") or {}).get("playlist_name")
                     if isinstance(item.get("album_backlink"), dict)
                     else None,
-                    duration_seconds=int(item["duration"]) if item.get("duration") else None,
+                    duration_seconds=int(item["duration"])
+                    if item.get("duration")
+                    else None,
                     license=str(item.get("license") or "") or None,
                 )
             )
@@ -310,7 +328,9 @@ class OpenMusicService:
             "iiextmetadatalanguage": "zh",
         }
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
-            response = client.get("https://commons.wikimedia.org/w/api.php", params=params)
+            response = client.get(
+                "https://commons.wikimedia.org/w/api.php", params=params
+            )
             response.raise_for_status()
         results: list[MusicSearchResult] = []
         pages = response.json().get("query", {}).get("pages", {})
@@ -328,9 +348,13 @@ class OpenMusicService:
                 MusicSearchResult(
                     identifier=f"wikimedia_commons:{page.get('pageid')}",
                     title=_metadata_value(metadata, "ObjectName") or title,
-                    creator=_metadata_value(metadata, "Artist") or _metadata_value(metadata, "Credit"),
-                    year=(_metadata_value(metadata, "DateTimeOriginal") or "")[:4] or None,
-                    item_url=str(page.get("canonicalurl") or info.get("descriptionurl") or ""),
+                    creator=_metadata_value(metadata, "Artist")
+                    or _metadata_value(metadata, "Credit"),
+                    year=(_metadata_value(metadata, "DateTimeOriginal") or "")[:4]
+                    or None,
+                    item_url=str(
+                        page.get("canonicalurl") or info.get("descriptionurl") or ""
+                    ),
                     source="wikimedia_commons",
                     source_label="Wikimedia Commons",
                     can_download=True,
@@ -361,21 +385,30 @@ class OpenMusicService:
             identifier = str(item.get("id") or "")
             if not self._numeric_identifier_pattern.fullmatch(identifier):
                 continue
-            can_download = bool(item.get("audiodownload_allowed") and item.get("audiodownload"))
+            can_download = bool(
+                item.get("audiodownload_allowed") and item.get("audiodownload")
+            )
             results.append(
                 MusicSearchResult(
                     identifier=f"jamendo:{identifier}",
                     title=str(item.get("name") or identifier),
                     creator=str(item.get("artist_name") or "") or None,
                     year=str(item.get("releasedate") or "")[:4] or None,
-                    item_url=str(item.get("shareurl") or item.get("shorturl") or "https://www.jamendo.com"),
+                    item_url=str(
+                        item.get("shareurl")
+                        or item.get("shorturl")
+                        or "https://www.jamendo.com"
+                    ),
                     source="jamendo",
                     source_label="Jamendo",
                     can_download=can_download,
                     preview_url=str(item.get("audio") or "") or None,
-                    artwork_url=str(item.get("image") or item.get("album_image") or "") or None,
+                    artwork_url=str(item.get("image") or item.get("album_image") or "")
+                    or None,
                     album=str(item.get("album_name") or "") or None,
-                    duration_seconds=int(item["duration"]) if item.get("duration") else None,
+                    duration_seconds=int(item["duration"])
+                    if item.get("duration")
+                    else None,
                     license=str(item.get("license_ccurl") or "") or None,
                 )
             )
@@ -393,7 +426,10 @@ class OpenMusicService:
             name = str(item.get("name") or "")
             file_format = str(item.get("format") or "")
             suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            if suffix not in {"flac", "wav", "mp3", "m4a", "ogg", "opus"} and file_format.lower() not in preferred:
+            if (
+                suffix not in {"flac", "wav", "mp3", "m4a", "ogg", "opus"}
+                and file_format.lower() not in preferred
+            ):
                 continue
             try:
                 size = int(item["size"]) if item.get("size") else None
@@ -426,7 +462,9 @@ class OpenMusicService:
             "iiprop": "url|mime|size",
         }
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
-            response = client.get("https://commons.wikimedia.org/w/api.php", params=params)
+            response = client.get(
+                "https://commons.wikimedia.org/w/api.php", params=params
+            )
             response.raise_for_status()
         page = response.json().get("query", {}).get("pages", {}).get(page_id, {})
         info_items = page.get("imageinfo") or []
@@ -453,11 +491,15 @@ class OpenMusicService:
             response = client.get(f"https://api.audius.co/v1/tracks/{identifier}")
             response.raise_for_status()
         item = response.json().get("data") or {}
-        download = item.get("download") if isinstance(item.get("download"), dict) else {}
+        download = (
+            item.get("download") if isinstance(item.get("download"), dict) else {}
+        )
         url = str(download.get("url") or "") if item.get("is_downloadable") else ""
         if not url:
             return []
-        filename = str(item.get("orig_filename") or f"{item.get('title') or identifier}.mp3")
+        filename = str(
+            item.get("orig_filename") or f"{item.get('title') or identifier}.mp3"
+        )
         return [MusicFile(name=filename, format="原始音频", download_url=url)]
 
     def _jamendo_files(self, identifier: str) -> list[MusicFile]:

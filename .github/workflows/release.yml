@@ -6,7 +6,7 @@ on:
       version:
         description: Release version without v prefix
         required: true
-        default: 1.0.4
+        default: 1.0.5
   push:
     tags:
       - "v*"
@@ -150,7 +150,7 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "修复抖音新鲜 Cookie 识别，增加本机浏览器授权与自动重试，并清理错误乱码。" --assets release-assets --output release-assets/update-manifest.json
+          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "新增抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需读取浏览器 Cookie。" --assets release-assets --output release-assets/update-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

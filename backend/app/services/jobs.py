@@ -158,9 +158,7 @@ class JobManager:
             updated_at=now,
         )
         self._jobs[job_id] = job
-        self._tool_specs[job_id] = ToolJobSpec(
-            operation="transfer", input_path=target
-        )
+        self._tool_specs[job_id] = ToolJobSpec(operation="transfer", input_path=target)
         asyncio.create_task(self._run_tool(job_id))
         return job.model_copy(deep=True)
 
@@ -192,7 +190,9 @@ class JobManager:
             job_dir.mkdir(parents=True, exist_ok=True)
             try:
                 if spec.direct_url:
-                    path = await self._download_direct(job_id, entry.media.title, spec, job_dir)
+                    path = await self._download_direct(
+                        job_id, entry.media.title, spec, job_dir
+                    )
                 else:
                     path = await asyncio.to_thread(
                         self._download_ytdlp,
@@ -268,14 +268,18 @@ class JobManager:
                 "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
             )
         }
-        async with httpx.AsyncClient(headers=headers, timeout=60, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            headers=headers, timeout=60, follow_redirects=True
+        ) as client:
             total: int | None = None
             supports_ranges = False
             try:
                 head = await client.head(spec.direct_url)
                 if head.is_success:
                     total = int(head.headers.get("content-length", "0")) or None
-                    supports_ranges = head.headers.get("accept-ranges", "").lower() == "bytes"
+                    supports_ranges = (
+                        head.headers.get("accept-ranges", "").lower() == "bytes"
+                    )
             except (httpx.HTTPError, ValueError):
                 pass
             if total and total >= 8 * 1024 * 1024 and supports_ranges:
@@ -285,7 +289,9 @@ class JobManager:
                 return path
             async with client.stream("GET", spec.direct_url) as response:
                 response.raise_for_status()
-                total = total or int(response.headers.get("content-length", "0")) or None
+                total = (
+                    total or int(response.headers.get("content-length", "0")) or None
+                )
                 downloaded = 0
                 with path.open("wb") as output:
                     async for chunk in response.aiter_bytes(256 * 1024):
@@ -306,7 +312,10 @@ class JobManager:
         part_size = (total + segments - 1) // segments
         downloaded = [0 for _ in range(segments)]
         lock = asyncio.Lock()
-        part_paths = [target.with_suffix(f"{target.suffix}.part{index}") for index in range(segments)]
+        part_paths = [
+            target.with_suffix(f"{target.suffix}.part{index}")
+            for index in range(segments)
+        ]
 
         async def fetch(index: int) -> None:
             start = index * part_size
@@ -338,9 +347,13 @@ class JobManager:
                     last_error = exc
                     async with lock:
                         downloaded[index] = 0
-                        self._update_progress(job_id, sum(downloaded), total, None, None)
+                        self._update_progress(
+                            job_id, sum(downloaded), total, None, None
+                        )
                     part_paths[index].unlink(missing_ok=True)
-            raise RuntimeError(f"所有下载线路均无法获取分段 {index + 1}") from last_error
+            raise RuntimeError(
+                f"所有下载线路均无法获取分段 {index + 1}"
+            ) from last_error
 
         try:
             await asyncio.gather(*(fetch(index) for index in range(segments)))
@@ -368,13 +381,16 @@ class JobManager:
         async with httpx.AsyncClient(
             headers=headers, timeout=60, follow_redirects=True
         ) as client:
+
             async def probe(url: str) -> tuple[str, int | None, bool, float]:
                 started = time.monotonic()
                 try:
                     response = await client.head(url)
                     response.raise_for_status()
                     size = int(response.headers.get("content-length", "0")) or None
-                    ranges = response.headers.get("accept-ranges", "").lower() == "bytes"
+                    ranges = (
+                        response.headers.get("accept-ranges", "").lower() == "bytes"
+                    )
                     return url, size, ranges, time.monotonic() - started
                 except (httpx.HTTPError, ValueError):
                     return url, None, False, float("inf")
@@ -420,15 +436,17 @@ class JobManager:
                         self._update_progress(job_id, downloaded, total, None, None)
             return target
 
-    def _process_tool(
-        self, job_id: str, spec: ToolJobSpec, job_dir: Path
-    ) -> Path:
+    def _process_tool(self, job_id: str, spec: ToolJobSpec, job_dir: Path) -> Path:
         if not spec.input_path or not spec.input_path.is_file():
             raise RuntimeError("上传文件不存在")
         source = spec.input_path
         stem = _safe_stem(source.stem)
         if spec.operation == "compress_image":
-            extension = spec.output_format if spec.output_format in {"jpg", "jpeg", "png", "webp"} else "webp"
+            extension = (
+                spec.output_format
+                if spec.output_format in {"jpg", "jpeg", "png", "webp"}
+                else "webp"
+            )
             target = job_dir / f"{stem}-compressed.{extension}"
             with Image.open(source) as image:
                 image.thumbnail((3840, 3840), Image.Resampling.LANCZOS)
@@ -451,11 +469,17 @@ class JobManager:
             ]
             result = subprocess.run(command, capture_output=True, text=True, check=True)
             parsed = json.loads(result.stdout)
-            target.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
+            target.write_text(
+                json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             self._jobs[job_id].progress = 0.99
             return target
         if spec.operation == "extract_audio":
-            extension = spec.output_format if spec.output_format in {"mp3", "m4a", "flac", "wav"} else "mp3"
+            extension = (
+                spec.output_format
+                if spec.output_format in {"mp3", "m4a", "flac", "wav"}
+                else "mp3"
+            )
             target = job_dir / f"{stem}-audio.{extension}"
             codec_args = {
                 "mp3": ["-codec:a", "libmp3lame", "-b:a", "320k"],
@@ -672,10 +696,6 @@ class JobManager:
                     "preferredquality": spec.preferred_quality or "192",
                 }
             ]
-        if self._settings.cookie_file and self._settings.cookie_file.is_file():
-            options["cookiefile"] = str(self._settings.cookie_file)
-        elif spec.cookie_browser:
-            options["cookiesfrombrowser"] = (spec.cookie_browser,)
         if self._settings.ffmpeg_location:
             options["ffmpeg_location"] = str(self._settings.ffmpeg_location)
 
@@ -720,7 +740,9 @@ class JobManager:
 
     def _prune(self) -> None:
         cutoff = time.time() - self._settings.job_ttl_seconds
-        expired = [key for key, value in self._jobs.items() if value.updated_at < cutoff]
+        expired = [
+            key for key, value in self._jobs.items() if value.updated_at < cutoff
+        ]
         for key in expired:
             path = self._settings.download_dir / key
             if path.is_dir():

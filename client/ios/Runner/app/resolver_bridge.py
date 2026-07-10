@@ -96,11 +96,173 @@ def _base_options() -> dict[str, Any]:
     }
 
 
+def _is_douyin_url(value: str) -> bool:
+    host = (urllib.parse.urlparse(value).hostname or "").lower()
+    return (
+        host == "douyin.com"
+        or host.endswith(".douyin.com")
+        or host == "iesdouyin.com"
+        or host.endswith(".iesdouyin.com")
+    )
+
+
+def _douyin_video_id(value: str) -> str | None:
+    match = re.search(r"/(?:video|note)/(\d{10,})", value)
+    if match:
+        return match.group(1)
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(value).query)
+    for key in ("modal_id", "aweme_id", "item_id"):
+        candidate = _text((query.get(key) or [None])[0])
+        if candidate and re.fullmatch(r"\d{10,}", candidate):
+            return candidate
+    return None
+
+
+def _first_http_url(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    return next(
+        (str(item) for item in value if str(item).startswith(("http://", "https://"))),
+        None,
+    )
+
+
+def _resolve_douyin_share(url: str) -> dict[str, Any]:
+    video_id = _douyin_video_id(url)
+    if not video_id:
+        request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            final_url = response.geturl()
+            html = response.read().decode("utf-8", "replace")
+        if not _is_douyin_url(final_url):
+            raise RuntimeError("抖音短链接跳转到了未知站点")
+        video_id = _douyin_video_id(final_url)
+        if not video_id:
+            match = re.search(r"(?:video|note)[/\\\"]+(\d{10,})", html)
+            video_id = match.group(1) if match else None
+    if not video_id:
+        raise RuntimeError("无法从抖音链接识别作品 ID")
+
+    share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
+    request = urllib.request.Request(share_url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(request, timeout=25) as response:
+        html = response.read().decode("utf-8", "replace")
+    marker = "window._ROUTER_DATA ="
+    marker_index = html.find(marker)
+    json_start = html.find("{", marker_index + len(marker))
+    script_end = html.find("</script>", json_start)
+    if marker_index < 0 or json_start < 0 or script_end <= json_start:
+        raise RuntimeError("匿名分享页没有内嵌作品数据")
+    router_data = json.loads(html[json_start:script_end].strip().removesuffix(";"))
+    loader_data = router_data.get("loaderData") or {}
+    page_data = next(
+        (
+            value
+            for value in loader_data.values()
+            if isinstance(value, dict) and isinstance(value.get("videoInfoRes"), dict)
+        ),
+        None,
+    )
+    item_list = ((page_data or {}).get("videoInfoRes") or {}).get("item_list") or []
+    item = next(
+        (
+            value
+            for value in item_list
+            if isinstance(value, dict) and str(value.get("aweme_id")) == video_id
+        ),
+        item_list[0] if item_list else None,
+    )
+    if not isinstance(item, dict):
+        raise RuntimeError("匿名分享页没有返回作品详情")
+
+    specs: dict[str, dict[str, Any]] = {}
+    options: list[dict[str, object]] = []
+    video = item.get("video") if isinstance(item.get("video"), dict) else {}
+    play_url = _first_http_url((video.get("play_addr") or {}).get("url_list"))
+    width = _integer(video.get("width"))
+    height = _integer(video.get("height"))
+    if play_url:
+        resolution = (
+            urllib.parse.parse_qs(urllib.parse.urlparse(play_url).query)
+            .get("ratio", [None])[0]
+        ) or (f"{width}×{height}" if width and height else None)
+        specs["video:douyin-share"] = {
+            "kind": "video",
+            "direct_url": play_url,
+            "extension": "mp4",
+        }
+        options.append(
+            _option(
+                "video:douyin-share",
+                "video",
+                "抖音公开视频 · MP4",
+                "mp4",
+                resolution=resolution,
+            )
+        )
+
+    cover_url = _first_http_url((video.get("cover") or {}).get("url_list"))
+    image_sources: list[tuple[str, str]] = []
+    if cover_url:
+        image_sources.append(("cover", cover_url))
+    for index, image in enumerate(item.get("images") or [], start=1):
+        if not isinstance(image, dict):
+            continue
+        image_url = _first_http_url(
+            image.get("url_list") or image.get("download_url_list")
+        )
+        if image_url:
+            image_sources.append((str(index), image_url))
+    for label, image_url in image_sources[:20]:
+        extension = (
+            Path(urllib.parse.urlparse(image_url).path).suffix.lstrip(".").lower()
+        )
+        if extension not in _IMAGE_EXTENSIONS:
+            extension = "jpg"
+        option_id = f"image:{label}"
+        specs[option_id] = {
+            "kind": "image",
+            "direct_url": image_url,
+            "extension": extension,
+        }
+        options.append(
+            _option(
+                option_id,
+                "image",
+                "最高质量封面" if label == "cover" else f"图片 {label}",
+                extension,
+            )
+        )
+    if not options:
+        raise RuntimeError("匿名分享页没有返回视频或图片地址")
+
+    media_id = uuid.uuid4().hex
+    title = _text(item.get("desc")) or f"抖音作品 {video_id}"
+    author = item.get("author") if isinstance(item.get("author"), dict) else {}
+    _CACHE[media_id] = {"source_url": url, "title": title, "specs": specs}
+    if len(_CACHE) > 80:
+        _CACHE.pop(next(iter(_CACHE)))
+    duration_ms = _integer(video.get("duration"))
+    return {
+        "media_id": media_id,
+        "source_url": url,
+        "title": title,
+        "creator": _text(author.get("nickname")),
+        "platform": "Douyin",
+        "duration_seconds": duration_ms // 1000 if duration_ms else None,
+        "thumbnail_url": cover_url,
+        "options": options,
+        "warnings": ["已通过抖音匿名分享页直接解析，全程不读取或发送 Cookie。"],
+    }
+
+
 def resolve(argument: str) -> str:
     request = json.loads(argument)
     url = str(request.get("url") or "").strip()
     if not url.startswith(("http://", "https://")):
         raise ValueError("请输入完整的 http 或 https 链接")
+    if _is_douyin_url(url):
+        return json.dumps(_resolve_douyin_share(url), ensure_ascii=False)
 
     with yt_dlp.YoutubeDL(_base_options()) as ydl:
         raw = ydl.extract_info(url, download=False)
@@ -230,7 +392,9 @@ def resolve(argument: str) -> str:
 
     thumbnail = _text(root.get("thumbnail") or raw.get("thumbnail"))
     if thumbnail:
-        extension = Path(urllib.parse.urlparse(thumbnail).path).suffix.lstrip(".").lower()
+        extension = (
+            Path(urllib.parse.urlparse(thumbnail).path).suffix.lstrip(".").lower()
+        )
         if extension not in _IMAGE_EXTENSIONS:
             extension = "jpg"
         specs["image:cover"] = {
@@ -264,7 +428,9 @@ def resolve(argument: str) -> str:
             "direct_url": direct_url,
             "headers": root.get("http_headers") or {},
         }
-        options.append(_option(option_id, kind, f"原始媒体 · {extension.upper()}", extension))
+        options.append(
+            _option(option_id, kind, f"原始媒体 · {extension.upper()}", extension)
+        )
 
     if not options:
         raise RuntimeError("该页面暂未发现 iOS 可直接保存的公开媒体格式")
@@ -285,8 +451,12 @@ def resolve(argument: str) -> str:
             "media_id": media_id,
             "source_url": source_url,
             "title": title,
-            "creator": root.get("uploader") or root.get("creator") or root.get("channel"),
-            "platform": root.get("extractor_key") or root.get("extractor") or "iOS 本地解析",
+            "creator": root.get("uploader")
+            or root.get("creator")
+            or root.get("channel"),
+            "platform": root.get("extractor_key")
+            or root.get("extractor")
+            or "iOS 本地解析",
             "duration_seconds": _integer(root.get("duration")),
             "thumbnail_url": thumbnail,
             "options": options,
@@ -315,13 +485,19 @@ def download(argument: str) -> str:
     direct_url = spec.get("direct_url")
     if direct_url:
         parsed_extension = Path(urllib.parse.urlparse(direct_url).path).suffix
-        suffix = parsed_extension if parsed_extension else ".bin"
+        extension = _text(spec.get("extension"))
+        suffix = (
+            f".{extension.lstrip('.')}" if extension else parsed_extension or ".bin"
+        )
         filename = _safe_filename(str(media["title"])) + suffix
         target = _unique_path(output_dir / filename)
         headers = {"User-Agent": _USER_AGENT, **(spec.get("headers") or {})}
-        with urllib.request.urlopen(
-            urllib.request.Request(direct_url, headers=headers), timeout=45
-        ) as source, target.open("wb") as destination:
+        with (
+            urllib.request.urlopen(
+                urllib.request.Request(direct_url, headers=headers), timeout=45
+            ) as source,
+            target.open("wb") as destination,
+        ):
             shutil.copyfileobj(source, destination, length=256 * 1024)
         result_path = target
     else:
