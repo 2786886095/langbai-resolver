@@ -50,7 +50,7 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.0.7 · 全平台支持检测'), findsOneWidget);
+    expect(find.text('当前版本 1.0.8 · 全平台支持检测'), findsOneWidget);
     expect(find.text('默认保存路径'), findsOneWidget);
   });
 

@@ -23,9 +23,9 @@ class Settings:
     allow_fake_ip_dns: bool
     jamendo_client_id: str | None = None
     audius_api_key: str | None = None
-    update_version: str = "1.0.7"
+    update_version: str = "1.0.8"
     update_notes: str = (
-        "B站扫码登录最高画质，iOS CA 证书修复，Android 固定发布签名"
+        "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库"
     )
     update_windows_url: str = ""
     update_windows_sha256: str = ""
@@ -63,10 +63,10 @@ class Settings:
             in {"1", "true", "yes", "on"},
             jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
             audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.7").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.8").strip(),
             update_notes=os.getenv(
                 "LANGBAI_UPDATE_NOTES",
-                "B站扫码登录最高画质，iOS CA 证书修复，Android 固定发布签名",
+                "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库",
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(

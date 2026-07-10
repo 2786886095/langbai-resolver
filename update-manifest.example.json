@@ -1,6 +1,6 @@
 {
-  "version": "1.0.7",
-  "notes": "B站扫码登录下载最高画质，修复 iOS CA 证书，Android 改用固定发布签名。",
+  "version": "1.0.8",
+  "notes": "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库。",
   "published_at": "2026-07-10T00:00:00Z",
   "platforms": {
     "windows": {
