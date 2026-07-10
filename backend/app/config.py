@@ -23,9 +23,9 @@ class Settings:
     allow_fake_ip_dns: bool
     jamendo_client_id: str | None = None
     audius_api_key: str | None = None
-    update_version: str = "1.0.5"
+    update_version: str = "1.0.6"
     update_notes: str = (
-        "抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需浏览器 Cookie"
+        "支持直接粘贴整段抖音分享文案，自动提取链接并匿名解析"
     )
     update_windows_url: str = ""
     update_windows_sha256: str = ""
@@ -63,10 +63,10 @@ class Settings:
             in {"1", "true", "yes", "on"},
             jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
             audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.5").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.6").strip(),
             update_notes=os.getenv(
                 "LANGBAI_UPDATE_NOTES",
-                "抖音匿名分享页直连解析，Windows、Android 与 iOS 均无需浏览器 Cookie",
+                "支持直接粘贴整段抖音分享文案，自动提取链接并匿名解析",
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(

@@ -47,6 +47,13 @@ class LinkDetector {
     return detect(data?.text);
   }
 
+  static String? extractHttpUrl(String? input) {
+    if (input == null || input.trim().isEmpty) return null;
+    final value = _urlPattern.firstMatch(input)?.group(0);
+    if (value == null) return null;
+    return value.replaceFirst(RegExp(r'''[\)\]}>，。！？；：、]+$'''), '');
+  }
+
   DetectedLink? detect(String? input) {
     if (input == null || input.trim().isEmpty) return null;
     final text = input.trim();
@@ -54,7 +61,7 @@ class LinkDetector {
     if (magnet != null) {
       return DetectedLink(value: magnet, kind: DetectedLinkKind.magnet);
     }
-    final value = _urlPattern.firstMatch(text)?.group(0);
+    final value = extractHttpUrl(text);
     if (value == null) return null;
     final uri = Uri.tryParse(value);
     final extension = uri?.pathSegments.isEmpty ?? true
