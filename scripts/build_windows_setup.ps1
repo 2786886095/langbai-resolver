@@ -12,11 +12,17 @@ $InstallerScript = Join-Path $ProjectRoot "installer\windows\langbai-resolver.is
 Push-Location $ClientRoot
 try {
     flutter pub get
+    if ($LASTEXITCODE -ne 0) {
+        throw "flutter pub get failed with exit code $LASTEXITCODE."
+    }
     flutter build windows --release `
         --build-name $Version `
         --dart-define="APP_VERSION=$Version" `
         --dart-define="API_BASE_URL=$ApiBaseUrl" `
         --dart-define="UPDATE_MANIFEST_URL=$UpdateManifestUrl"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Flutter Windows build failed with exit code $LASTEXITCODE."
+    }
 }
 finally {
     Pop-Location
