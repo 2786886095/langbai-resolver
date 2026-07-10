@@ -5,6 +5,13 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+def signingProperties = new Properties()
+def signingPropertiesFile = rootProject.file("key.properties")
+def hasReleaseSigning = signingPropertiesFile.exists()
+if (hasReleaseSigning) {
+    signingProperties.load(new FileInputStream(signingPropertiesFile))
+}
+
 android {
     namespace = "com.langbai.mediaharbor"
     compileSdk = flutter.compileSdkVersion
@@ -30,10 +37,22 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                keyAlias = signingProperties["keyAlias"]
+                keyPassword = signingProperties["keyPassword"]
+                storeFile = file(signingProperties["storeFile"])
+                storePassword = signingProperties["storePassword"]
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Replace with a private upload key before distributing publicly.
-            signingConfig = signingConfigs.debug
+            // Local builds fall back to debug signing. GitHub releases always
+            // receive the persistent private signing key from repository secrets.
+            signingConfig = hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

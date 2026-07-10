@@ -18,7 +18,11 @@ from PIL import Image
 
 from app.config import Settings
 from app.models import DownloadJob, JobState
-from app.services.extractor import DownloadSpec, ResolverService
+from app.services.extractor import (
+    DownloadSpec,
+    ResolverService,
+    temporary_bilibili_cookie_file,
+)
 from app.services.security import validate_public_url
 
 
@@ -699,8 +703,11 @@ class JobManager:
         if self._settings.ffmpeg_location:
             options["ffmpeg_location"] = str(self._settings.ffmpeg_location)
 
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([source_url])
+        with temporary_bilibili_cookie_file(spec.cookie_header) as cookie_file:
+            if cookie_file:
+                options["cookiefile"] = cookie_file
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.download([source_url])
 
         files = [
             path

@@ -7,6 +7,7 @@
 ## 主要能力
 
 - 使用 yt-dlp 2026.07.04 的 1,700+ 个站点解析器并提供通用网页兜底，可选择视频分辨率、音频、封面和图片。
+- B站支持本机二维码登录，会话加密保存，可解析账号可见的 1080P、4K、HDR 等最高画质并自动合并最高音质。
 - 静态网页媒体嗅探、单链接八段并发、多镜像线路交叉下载、磁力链接和 `.torrent` 种子任务。
 - 本地视频提取音频、视频压缩、图片压缩和媒体信息读取。
 - 聚合 Internet Archive、Wikimedia Commons、Audius、Apple Music 和 MusicBrainz；仅对来源明确授权的文件提供下载。
@@ -18,6 +19,9 @@
 
 抖音公开作品优先通过移动匿名分享页的 `_ROUTER_DATA` 直接解析，Windows、Android 与 iOS 均不读取 Cookie；专用入口失效时会明确提示更新解析器。
 可以直接粘贴“复制打开抖音”生成的整段分享文案，langbai解析会自动提取其中的第一个 HTTP 链接。
+B站扫码会话与浏览器 Cookie 无关，仅存放在当前设备的系统加密存储中；退出登录会立即删除本地会话。
+
+Android 从 1.0.7 开始使用固定发布签名。1.0.6 及更早 APK 使用了临时调试签名，首次换到 1.0.7 时仍需卸载旧版一次；安装 1.0.7 后的后续版本可直接覆盖更新。
 
 ## 目录
 
@@ -55,7 +59,7 @@ Windows Setup（需要 Flutter、Visual Studio C++ 桌面工作负载和 Inno Se
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.0.6" `
+  -Version "1.0.7" `
   -UpdateManifestUrl "https://github.com/你的账号/langbai-resolver/releases/latest/download/update-manifest.json"
 ```
 
@@ -79,7 +83,7 @@ UPDATE_MANIFEST_URL="https://github.com/你的账号/langbai-resolver/releases/l
 
 ## GitHub Release 与自动更新
 
-推送 `v1.0.6` 形式的标签，`release.yml` 会自动生成并发布：
+推送 `v1.0.7` 形式的标签，`release.yml` 会自动生成并发布：
 
 - `langbai-resolver-Setup.exe`
 - `langbai-resolver-Android.apk`

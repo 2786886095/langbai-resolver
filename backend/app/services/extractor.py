@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -37,6 +40,16 @@ _DOUYIN_MOBILE_USER_AGENT = (
 )
 _HTTP_URL_RE = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
 _TRAILING_SHARE_PUNCTUATION = ")]}>，。！？；：、"
+_BILIBILI_HOSTS = {"bilibili.com", "b23.tv"}
+_BILIBILI_COOKIE_NAMES = {
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "sid",
+    "bili_ticket",
+    "bili_ticket_expires",
+}
 
 
 def clean_ytdlp_error(value: object) -> str:
@@ -56,6 +69,50 @@ def extract_http_url(value: str) -> str | None:
     return match.group(0).rstrip(_TRAILING_SHARE_PUNCTUATION) if match else None
 
 
+def _is_bilibili_url(value: str) -> bool:
+    hostname = (urlparse(value).hostname or "").lower()
+    return hostname in _BILIBILI_HOSTS or hostname.endswith(".bilibili.com")
+
+
+def _clean_bilibili_cookie(value: str | None, url: str) -> str | None:
+    if not value or not _is_bilibili_url(url) or "\r" in value or "\n" in value:
+        return None
+    pairs: list[str] = []
+    for item in value.split(";"):
+        name, separator, content = item.strip().partition("=")
+        if separator and name in _BILIBILI_COOKIE_NAMES and content:
+            pairs.append(f"{name}={content}")
+    return (
+        "; ".join(pairs)
+        if any(item.startswith("SESSDATA=") for item in pairs)
+        else None
+    )
+
+
+@contextlib.contextmanager
+def temporary_bilibili_cookie_file(cookie_header: str | None):
+    if not cookie_header:
+        yield None
+        return
+    descriptor, path = tempfile.mkstemp(prefix="langbai-bilibili-", suffix=".txt")
+    os.close(descriptor)
+    try:
+        expires = int(time.time()) + 30 * 24 * 60 * 60
+        lines = ["# Netscape HTTP Cookie File"]
+        for item in cookie_header.split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name in _BILIBILI_COOKIE_NAMES:
+                lines.append(
+                    f".bilibili.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}"
+                )
+        with open(path, "w", encoding="utf-8", newline="\n") as output:
+            output.write("\n".join(lines) + "\n")
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 @dataclass(slots=True)
 class DownloadSpec:
     option: MediaOption
@@ -63,6 +120,7 @@ class DownloadSpec:
     direct_url: str | None = None
     preferred_codec: str | None = None
     preferred_quality: str | None = None
+    cookie_header: str | None = None
 
 
 @dataclass(slots=True)
@@ -102,13 +160,16 @@ class ResolverService:
         self._settings = settings
         self._cache: dict[str, ResolvedEntry] = {}
 
-    async def resolve(self, raw_url: str) -> MediaInfo:
+    async def resolve(
+        self, raw_url: str, bilibili_cookie: str | None = None
+    ) -> MediaInfo:
         candidate = extract_http_url(raw_url)
         if not candidate:
             raise ValueError("未在粘贴内容中找到 http 或 https 链接")
         url = await asyncio.to_thread(
             validate_public_url, candidate, self._settings.allow_fake_ip_dns
         )
+        cookie_header = _clean_bilibili_cookie(bilibili_cookie, url)
         self._prune()
         direct_entry = self._resolve_direct_url(url)
         if direct_entry:
@@ -124,7 +185,9 @@ class ResolverService:
             self._cache[entry.media.media_id] = entry
             return entry.media
         try:
-            entry = await asyncio.to_thread(self._resolve_with_ytdlp, url)
+            entry = await asyncio.to_thread(
+                self._resolve_with_ytdlp, url, cookie_header
+            )
         except yt_dlp.utils.DownloadError as error:
             if browser_cookies_required(error):
                 raise yt_dlp.utils.DownloadError(
@@ -346,7 +409,7 @@ class ResolverService:
         self._prune()
         return self._cache.get(media_id)
 
-    def _base_ytdlp_options(self) -> dict[str, Any]:
+    def _base_ytdlp_options(self, cookie_file: str | None = None) -> dict[str, Any]:
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -362,11 +425,16 @@ class ResolverService:
                 )
             },
         }
+        if cookie_file:
+            options["cookiefile"] = cookie_file
         return options
 
-    def _resolve_with_ytdlp(self, url: str) -> ResolvedEntry:
-        with yt_dlp.YoutubeDL(self._base_ytdlp_options()) as ydl:
-            raw_info = ydl.extract_info(url, download=False)
+    def _resolve_with_ytdlp(
+        self, url: str, cookie_header: str | None = None
+    ) -> ResolvedEntry:
+        with temporary_bilibili_cookie_file(cookie_header) as cookie_file:
+            with yt_dlp.YoutubeDL(self._base_ytdlp_options(cookie_file)) as ydl:
+                raw_info = ydl.extract_info(url, download=False)
 
         if not raw_info:
             raise yt_dlp.utils.DownloadError("解析器未返回媒体信息")
@@ -558,6 +626,11 @@ class ResolverService:
 
         if not specs:
             raise yt_dlp.utils.DownloadError("没有找到可下载资源")
+
+        if cookie_header:
+            for spec in specs.values():
+                spec.cookie_header = cookie_header
+            warnings.insert(0, "已使用本机B站登录会话请求账号可见的最高画质。")
 
         media = MediaInfo(
             media_id=media_id,

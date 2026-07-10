@@ -22,6 +22,9 @@ void main() {
     expect(find.text('langbai解析'), findsOneWidget);
     expect(find.text('识别链接'), findsOneWidget);
     expect(find.text('粘贴链接开始'), findsOneWidget);
+    await tester.tap(find.text('解析').first);
+    await tester.pumpAndSettle();
+    expect(find.text('B站最高画质'), findsOneWidget);
   });
 
   testWidgets('fits a narrow phone viewport without layout exceptions',
@@ -47,7 +50,7 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.0.6 · 全平台支持检测'), findsOneWidget);
+    expect(find.text('当前版本 1.0.7 · 全平台支持检测'), findsOneWidget);
     expect(find.text('默认保存路径'), findsOneWidget);
   });
 

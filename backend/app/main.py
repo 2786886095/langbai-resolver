@@ -36,7 +36,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.6",
+    version="1.0.7",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(
@@ -93,7 +93,7 @@ def update_manifest() -> UpdateManifest:
 @app.post("/api/v1/resolve", response_model=MediaInfo)
 async def resolve_media(request: ResolveRequest) -> MediaInfo:
     try:
-        return await resolver.resolve(request.url)
+        return await resolver.resolve(request.url, request.bilibili_cookie)
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except yt_dlp.utils.DownloadError as exc:

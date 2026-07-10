@@ -5,6 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IOS_ROOT="$PROJECT_ROOT/client/ios"
 PYTHON_SUPPORT_URL="${PYTHON_SUPPORT_URL:-https://github.com/beeware/Python-Apple-support/releases/download/3.14-b10/Python-3.14-iOS-support.b10.tar.gz}"
 YTDLP_VERSION="${YTDLP_VERSION:-2026.7.4}"
+CERTIFI_VERSION="${CERTIFI_VERSION:-2026.6.17}"
 ARCHIVE="$(mktemp -t langbai-python-ios.XXXXXX.tar.gz)"
 
 cleanup() {
@@ -26,7 +27,8 @@ python3 -m pip install \
   --disable-pip-version-check \
   --no-compile \
   --target "$PACKAGES_TARGET" \
-  "yt-dlp==$YTDLP_VERSION"
+  "yt-dlp==$YTDLP_VERSION" \
+  "certifi==$CERTIFI_VERSION"
 
 find "$PACKAGES_TARGET" -type d -name '__pycache__' -prune -exec rm -rf {} +
-echo "Prepared iOS local parser: Python 3.14 + yt-dlp $YTDLP_VERSION"
+echo "Prepared iOS local parser: Python 3.14 + yt-dlp $YTDLP_VERSION + certifi $CERTIFI_VERSION"

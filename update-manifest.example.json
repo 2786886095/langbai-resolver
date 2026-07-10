@@ -1,6 +1,6 @@
 {
-  "version": "1.0.6",
-  "notes": "支持直接粘贴整段抖音分享文案，自动提取链接并匿名解析。",
+  "version": "1.0.7",
+  "notes": "B站扫码登录下载最高画质，修复 iOS CA 证书，Android 改用固定发布签名。",
   "published_at": "2026-07-10T00:00:00Z",
   "platforms": {
     "windows": {
