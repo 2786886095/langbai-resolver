@@ -16,7 +16,7 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		A10000000000000000000001 /* LBPythonRuntime.m in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* LBPythonRuntime.m */; };
 		A10000000000000000000002 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* Python.xcframework */; };
-		A10000000000000000000003 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000003 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* Python.xcframework */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000004 /* app in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* app */; };
 		A10000000000000000000005 /* app_packages in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* app_packages */; };
 /* End PBXBuildFile section */
