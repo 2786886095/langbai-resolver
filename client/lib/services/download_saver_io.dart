@@ -5,6 +5,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'download_types.dart';
 
@@ -17,13 +18,23 @@ Future<SaveResult> saveDownload(
   final isMobile = Platform.isAndroid || Platform.isIOS;
   if (isMobile) {
     final directory = await getApplicationDocumentsDirectory();
-    target = File('${directory.path}${Platform.pathSeparator}$filename');
+    target = _availableFile(directory, filename);
   } else {
-    final location = await getSaveLocation(suggestedName: filename);
-    if (location == null) {
-      return const SaveResult(message: '已取消保存', cancelled: true);
+    final preferences = await SharedPreferences.getInstance();
+    final preferredPath = preferences.getString('download_directory')?.trim();
+    final preferredDirectory = preferredPath == null || preferredPath.isEmpty
+        ? null
+        : Directory(preferredPath);
+    if (preferredDirectory != null && await preferredDirectory.exists()) {
+      target = _availableFile(preferredDirectory, filename);
+    } else {
+      final location =
+          await getSaveLocation(suggestedName: _safeFilename(filename));
+      if (location == null) {
+        return const SaveResult(message: '已取消保存', cancelled: true);
+      }
+      target = File(location.path);
     }
-    target = File(location.path);
   }
 
   final request = http.Request('GET', uri);
@@ -59,5 +70,29 @@ Future<SaveResult> saveDownload(
       path: target.path,
     );
   }
-  return SaveResult(message: '文件已保存', path: target.path);
+  return SaveResult(message: '文件已保存至 ${target.path}', path: target.path);
+}
+
+String _safeFilename(String value) {
+  final leaf = value.split(RegExp(r'[\\/]')).last.trim();
+  final cleaned = leaf.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
+  return cleaned.isEmpty ? 'langbai-download.bin' : cleaned;
+}
+
+File _availableFile(Directory directory, String filename) {
+  final safe = _safeFilename(filename);
+  var candidate = File('${directory.path}${Platform.pathSeparator}$safe');
+  if (!candidate.existsSync()) return candidate;
+  final dot = safe.lastIndexOf('.');
+  final stem = dot > 0 ? safe.substring(0, dot) : safe;
+  final extension = dot > 0 ? safe.substring(dot) : '';
+  for (var index = 1; index < 10000; index++) {
+    candidate = File(
+      '${directory.path}${Platform.pathSeparator}$stem ($index)$extension',
+    );
+    if (!candidate.existsSync()) return candidate;
+  }
+  return File(
+    '${directory.path}${Platform.pathSeparator}${DateTime.now().millisecondsSinceEpoch}-$safe',
+  );
 }

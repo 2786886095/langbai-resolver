@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "notes": "langbai解析 1.0.0 更新",
+  "version": "1.0.1",
+  "notes": "修复 Windows 标题乱码、全端图标与字体；新增保存路径、自动解析和多线路并发下载。",
   "published_at": "2026-07-10T00:00:00Z",
   "platforms": {
     "windows": {

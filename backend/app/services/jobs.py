@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import httpx
 import yt_dlp
@@ -31,6 +32,7 @@ class ToolJobSpec:
     operation: str
     input_path: Path | None = None
     source: str | None = None
+    sources: tuple[str, ...] = ()
     output_format: str = ""
     quality: int = 78
 
@@ -102,22 +104,39 @@ class JobManager:
         asyncio.create_task(self._run_tool(job_id))
         return job.model_copy(deep=True)
 
-    def create_transfer(self, source: str) -> DownloadJob:
-        source = source.strip()
-        if not (source.startswith("magnet:") or source.startswith(("http://", "https://"))):
-            raise ValueError("只支持 Magnet 或公开的 http/https 种子链接")
+    def create_transfer(self, sources: str | list[str]) -> DownloadJob:
+        candidates = [sources] if isinstance(sources, str) else sources
+        normalized = tuple(
+            dict.fromkeys(item.strip() for item in candidates if item.strip())
+        )
+        if not normalized:
+            raise ValueError("请输入直链、Magnet 或种子链接")
+        if len(normalized) > 8:
+            raise ValueError("多线路下载最多支持 8 条镜像直链")
+        if any(
+            not item.startswith(("magnet:", "http://", "https://"))
+            for item in normalized
+        ):
+            raise ValueError("只支持 Magnet 或公开的 http/https 链接")
+        magnets = [item for item in normalized if item.startswith("magnet:")]
+        if magnets and len(normalized) != 1:
+            raise ValueError("Magnet 任务不能与其他下载线路混合")
         now = time.time()
         job_id = uuid.uuid4().hex
         job = DownloadJob(
             id=job_id,
             media_id="aria2-transfer",
-            option_id="torrent",
+            option_id="multi-source" if len(normalized) > 1 else "transfer",
             state=JobState.QUEUED,
             created_at=now,
             updated_at=now,
         )
         self._jobs[job_id] = job
-        self._tool_specs[job_id] = ToolJobSpec(operation="transfer", source=source)
+        self._tool_specs[job_id] = ToolJobSpec(
+            operation="transfer",
+            source=normalized[0],
+            sources=normalized,
+        )
         asyncio.create_task(self._run_tool(job_id))
         return job.model_copy(deep=True)
 
@@ -205,12 +224,19 @@ class JobManager:
             job_dir.mkdir(parents=True, exist_ok=True)
             try:
                 if spec.operation == "transfer":
-                    path = await asyncio.to_thread(
-                        self._run_transfer,
-                        job_id,
-                        spec.source or str(spec.input_path or ""),
-                        job_dir,
-                    )
+                    source = spec.source or str(spec.input_path or "")
+                    if spec.sources and all(
+                        item.startswith(("http://", "https://"))
+                        and not urlparse(item).path.lower().endswith(".torrent")
+                        for item in spec.sources
+                    ):
+                        path = await self._download_mirrors(
+                            job_id, list(spec.sources), job_dir
+                        )
+                    else:
+                        path = await asyncio.to_thread(
+                            self._run_transfer, job_id, source, job_dir
+                        )
                 else:
                     path = await asyncio.to_thread(
                         self._process_tool, job_id, spec, job_dir
@@ -254,7 +280,7 @@ class JobManager:
                 pass
             if total and total >= 8 * 1024 * 1024 and supports_ranges:
                 await self._download_segmented(
-                    client, spec.direct_url, path, job_id, total, segments=4
+                    client, [spec.direct_url], path, job_id, total, segments=8
                 )
                 return path
             async with client.stream("GET", spec.direct_url) as response:
@@ -271,7 +297,7 @@ class JobManager:
     async def _download_segmented(
         self,
         client: httpx.AsyncClient,
-        url: str,
+        urls: list[str],
         target: Path,
         job_id: str,
         total: int,
@@ -287,19 +313,34 @@ class JobManager:
             end = min(total - 1, start + part_size - 1)
             if start > end:
                 return
-            async with client.stream(
-                "GET", url, headers={"Range": f"bytes={start}-{end}"}
-            ) as response:
-                if response.status_code != 206:
-                    raise RuntimeError("服务器未按 Range 返回分段内容")
-                with part_paths[index].open("wb") as output:
-                    async for chunk in response.aiter_bytes(256 * 1024):
-                        output.write(chunk)
-                        async with lock:
-                            downloaded[index] += len(chunk)
-                            self._update_progress(
-                                job_id, sum(downloaded), total, None, None
-                            )
+            expected = end - start + 1
+            last_error: Exception | None = None
+            for offset in range(len(urls)):
+                url = urls[(index + offset) % len(urls)]
+                try:
+                    async with client.stream(
+                        "GET", url, headers={"Range": f"bytes={start}-{end}"}
+                    ) as response:
+                        if response.status_code != 206:
+                            raise RuntimeError("服务器未按 Range 返回分段内容")
+                        with part_paths[index].open("wb") as output:
+                            async for chunk in response.aiter_bytes(256 * 1024):
+                                output.write(chunk)
+                                async with lock:
+                                    downloaded[index] += len(chunk)
+                                    self._update_progress(
+                                        job_id, sum(downloaded), total, None, None
+                                    )
+                    if part_paths[index].stat().st_size != expected:
+                        raise RuntimeError("下载分段大小与预期不一致")
+                    return
+                except (httpx.HTTPError, OSError, RuntimeError) as exc:
+                    last_error = exc
+                    async with lock:
+                        downloaded[index] = 0
+                        self._update_progress(job_id, sum(downloaded), total, None, None)
+                    part_paths[index].unlink(missing_ok=True)
+            raise RuntimeError(f"所有下载线路均无法获取分段 {index + 1}") from last_error
 
         try:
             await asyncio.gather(*(fetch(index) for index in range(segments)))
@@ -310,6 +351,74 @@ class JobManager:
         finally:
             for part in part_paths:
                 part.unlink(missing_ok=True)
+
+    async def _download_mirrors(
+        self, job_id: str, urls: list[str], job_dir: Path
+    ) -> Path:
+        for url in urls:
+            await asyncio.to_thread(
+                validate_public_url, url, self._settings.allow_fake_ip_dns
+            )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+            )
+        }
+        async with httpx.AsyncClient(
+            headers=headers, timeout=60, follow_redirects=True
+        ) as client:
+            async def probe(url: str) -> tuple[str, int | None, bool, float]:
+                started = time.monotonic()
+                try:
+                    response = await client.head(url)
+                    response.raise_for_status()
+                    size = int(response.headers.get("content-length", "0")) or None
+                    ranges = response.headers.get("accept-ranges", "").lower() == "bytes"
+                    return url, size, ranges, time.monotonic() - started
+                except (httpx.HTTPError, ValueError):
+                    return url, None, False, float("inf")
+
+            probes = await asyncio.gather(*(probe(url) for url in urls))
+            available = sorted(probes, key=lambda item: item[3])
+            responsive = [item for item in available if item[3] != float("inf")]
+            selected = responsive[0][0] if responsive else urls[0]
+            filename = Path(unquote(urlparse(selected).path)).name or "download.bin"
+            raw_suffix = Path(filename).suffix
+            suffix = raw_suffix if 1 < len(raw_suffix) <= 12 else ".bin"
+            target = job_dir / f"{_safe_stem(Path(filename).stem)}{suffix}"
+
+            range_probes = [item for item in responsive if item[1] and item[2]]
+            if range_probes:
+                size_groups: dict[int, list[str]] = {}
+                for url, size, _, _ in range_probes:
+                    assert size is not None
+                    size_groups.setdefault(size, []).append(url)
+                total, compatible = max(
+                    size_groups.items(), key=lambda item: (len(item[1]), item[0])
+                )
+                if total >= 8 * 1024 * 1024:
+                    segments = min(8, max(4, len(compatible) * 2))
+                    await self._download_segmented(
+                        client,
+                        compatible,
+                        target,
+                        job_id,
+                        total,
+                        segments=segments,
+                    )
+                    return target
+
+            async with client.stream("GET", selected) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("content-length", "0")) or None
+                downloaded = 0
+                with target.open("wb") as output:
+                    async for chunk in response.aiter_bytes(256 * 1024):
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                        self._update_progress(job_id, downloaded, total, None, None)
+            return target
 
     def _process_tool(
         self, job_id: str, spec: ToolJobSpec, job_dir: Path

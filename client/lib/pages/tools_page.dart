@@ -50,7 +50,7 @@ class _ToolsPageState extends State<ToolsPage> {
         'compress', '媒体压缩', '视频和图片按目标大小缩小体积', Icons.compress_rounded),
     _ToolDefinition(
         'music', '无损音乐搜索', '搜索合法开放来源的 FLAC / WAV', Icons.headphones_rounded),
-    _ToolDefinition('direct', '直链并发下载', '四路分段并发与自动合并', Icons.link_rounded),
+    _ToolDefinition('direct', '多线路直链下载', '单链接八段并发，多镜像交叉下载', Icons.link_rounded),
     _ToolDefinition(
         'transfer', '磁力与种子', 'BT / Magnet 任务与文件选择', Icons.hub_outlined),
     _ToolDefinition(
@@ -211,7 +211,7 @@ class _ToolsPageState extends State<ToolsPage> {
     final tool = _selectedTool;
     if (tool == null || _busy) return;
     final input = _inputController.text.trim();
-    if (tool == 'parser' || tool == 'direct') {
+    if (tool == 'parser') {
       if (input.isEmpty) {
         setState(() => _error = '请先输入链接');
       } else {
@@ -237,6 +237,9 @@ class _ToolsPageState extends State<ToolsPage> {
         if (input.isEmpty) throw const ApiException('请输入歌曲、歌手或专辑');
         final results = await _api.searchMusic(input);
         if (mounted) setState(() => _musicResults = results);
+      } else if (tool == 'direct') {
+        if (input.isEmpty) throw const ApiException('请输入至少一条公开直链');
+        await _monitorAndSave(await _api.createTransfer(input));
       } else if (tool == 'transfer') {
         final torrentFile = _selectedFile;
         if (torrentFile != null &&
@@ -439,13 +442,25 @@ class _ToolWorkspace extends StatelessWidget {
             if (_needsInput)
               TextField(
                 controller: inputController,
+                minLines: tool.id == 'direct' ? 3 : 1,
+                maxLines: tool.id == 'direct' ? 6 : 1,
                 decoration: InputDecoration(
-                  labelText: tool.id == 'music' ? '歌曲、歌手或专辑' : '链接 / Magnet',
+                  labelText: tool.id == 'music'
+                      ? '歌曲、歌手或专辑'
+                      : tool.id == 'direct'
+                          ? '镜像直链（每行一条，最多 8 条）'
+                          : '链接 / Magnet',
                   prefixIcon: Icon(tool.id == 'music'
                       ? Icons.search_rounded
                       : Icons.link_rounded),
                 ),
               ),
+            if (tool.id == 'direct') ...[
+              const SizedBox(height: 8),
+              Text('多条线路必须指向同一文件；系统会测速并将分段分配到可用线路。',
+                  style: TextStyle(
+                      color: context.palette.textMuted, fontSize: 12)),
+            ],
             if (_needsFile) ...[
               OutlinedButton.icon(
                   onPressed: busy ? null : onPickFile,

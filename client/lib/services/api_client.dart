@@ -81,11 +81,18 @@ class ApiClient {
   }
 
   Future<DownloadJob> createTransfer(String source) async {
+    final sources = source
+        .split(RegExp(r'[\r\n]+'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toSet()
+        .take(8)
+        .toList();
     final response = await _client
         .post(
           _uri('/api/v1/tools/transfer'),
           headers: const {'content-type': 'application/json'},
-          body: jsonEncode({'source': source}),
+          body: jsonEncode({'sources': sources}),
         )
         .timeout(const Duration(seconds: 20));
     return DownloadJob.fromJson(_jsonOrThrow(response));

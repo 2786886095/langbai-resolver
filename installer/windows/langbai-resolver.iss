@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.1"
 #endif
 
 #define ProjectRoot SourcePath + "\..\.."
@@ -10,9 +10,9 @@ AppId={{E8BF4352-8B55-43FA-949C-67905B3709F3}
 AppName=langbai解析
 AppVersion={#AppVersion}
 AppPublisher=langbai
-AppPublisherURL=https://github.com/
-AppSupportURL=https://github.com/
-AppUpdatesURL=https://github.com/
+AppPublisherURL=https://github.com/2786886095/langbai-resolver
+AppSupportURL=https://github.com/2786886095/langbai-resolver/issues
+AppUpdatesURL=https://github.com/2786886095/langbai-resolver/releases/latest
 DefaultDirName={localappdata}\Programs\langbai解析
 DefaultGroupName=langbai解析
 DisableProgramGroupPage=yes

@@ -94,7 +94,8 @@ class SniffResponse(BaseModel):
 
 
 class TransferRequest(BaseModel):
-    source: str = Field(min_length=8, max_length=8192)
+    source: str | None = Field(default=None, min_length=8, max_length=8192)
+    sources: list[str] = Field(default_factory=list, max_length=8)
 
 
 class MusicSearchResult(BaseModel):

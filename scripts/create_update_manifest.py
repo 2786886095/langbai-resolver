@@ -19,6 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--notes", default="")
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -27,7 +28,7 @@ def main() -> None:
     windows = args.assets / "langbai-resolver-Setup.exe"
     manifest = {
         "version": args.version,
-        "notes": f"langbai解析 {args.version} 更新",
+        "notes": args.notes or f"langbai解析 {args.version} 更新",
         "published_at": datetime.now(UTC).isoformat(),
         "platforms": {
             "windows": {

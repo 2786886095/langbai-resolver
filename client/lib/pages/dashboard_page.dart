@@ -3,31 +3,18 @@ import 'package:flutter/services.dart';
 
 import '../models/download_record.dart';
 import '../models/media_models.dart';
-import '../services/link_detector.dart';
 import '../theme/langbai_theme.dart';
 
 class DashboardPage extends StatefulWidget {
   const DashboardPage({
     super.key,
-    required this.detectedLink,
-    required this.clipboardDetectionEnabled,
     required this.recentDownloads,
-    required this.onParseDetected,
-    required this.onIgnoreDetected,
-    required this.onClipboardDetectionChanged,
-    required this.onCheckClipboard,
     required this.onParseManual,
     required this.onOpenTool,
     required this.onShowAllTasks,
   });
 
-  final DetectedLink? detectedLink;
-  final bool clipboardDetectionEnabled;
   final List<DownloadRecord> recentDownloads;
-  final ValueChanged<DetectedLink> onParseDetected;
-  final VoidCallback onIgnoreDetected;
-  final ValueChanged<bool> onClipboardDetectionChanged;
-  final VoidCallback onCheckClipboard;
   final ValueChanged<String> onParseManual;
   final ValueChanged<String> onOpenTool;
   final VoidCallback onShowAllTasks;
@@ -71,38 +58,14 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  widget.detectedLink == null
-                      ? '粘贴链接开始解析，或从工具箱选择其他任务'
-                      : '检测到剪贴板中有可处理的链接',
+                  '复制链接后会自动解析，也可以在这里手动粘贴',
                   style: TextStyle(color: context.palette.textMuted),
                 ),
                 const SizedBox(height: 24),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 220),
-                  child: widget.detectedLink == null
-                      ? _ManualLinkPanel(
-                          key: const ValueKey('manual'),
-                          controller: _manualController,
-                          onPaste: _paste,
-                          onSubmit: () =>
-                              widget.onParseManual(_manualController.text),
-                          onCheckClipboard: widget.onCheckClipboard,
-                          clipboardDetectionEnabled:
-                              widget.clipboardDetectionEnabled,
-                          onClipboardDetectionChanged:
-                              widget.onClipboardDetectionChanged,
-                        )
-                      : _DetectedLinkPanel(
-                          key: ValueKey(widget.detectedLink!.value),
-                          link: widget.detectedLink!,
-                          clipboardDetectionEnabled:
-                              widget.clipboardDetectionEnabled,
-                          onClipboardDetectionChanged:
-                              widget.onClipboardDetectionChanged,
-                          onParse: () =>
-                              widget.onParseDetected(widget.detectedLink!),
-                          onIgnore: widget.onIgnoreDetected,
-                        ),
+                _ManualLinkPanel(
+                  controller: _manualController,
+                  onPaste: _paste,
+                  onSubmit: () => widget.onParseManual(_manualController.text),
                 ),
                 const SizedBox(height: 18),
                 _QuickTools(onOpen: widget.onOpenTool),
@@ -120,189 +83,16 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 }
 
-class _DetectedLinkPanel extends StatelessWidget {
-  const _DetectedLinkPanel({
-    super.key,
-    required this.link,
-    required this.clipboardDetectionEnabled,
-    required this.onClipboardDetectionChanged,
-    required this.onParse,
-    required this.onIgnore,
-  });
-
-  final DetectedLink link;
-  final bool clipboardDetectionEnabled;
-  final ValueChanged<bool> onClipboardDetectionChanged;
-  final VoidCallback onParse;
-  final VoidCallback onIgnore;
-
-  @override
-  Widget build(BuildContext context) {
-    final uri = Uri.tryParse(link.value);
-    final source = uri?.host.replaceFirst('www.', '') ?? '已识别链接';
-    return LangbaiCard(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = constraints.maxWidth < 740;
-            final content = Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text('检测到${link.label}',
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(source.characters.first.toUpperCase(),
-                          style: TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w800,
-                              color: Theme.of(context).colorScheme.primary)),
-                    ),
-                    const SizedBox(width: 13),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(source,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w700)),
-                          const SizedBox(height: 3),
-                          Text(link.label,
-                              style: TextStyle(
-                                  color: context.palette.textMuted,
-                                  fontSize: 13)),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 15),
-                Container(
-                  height: 52,
-                  padding: const EdgeInsets.symmetric(horizontal: 15),
-                  decoration: BoxDecoration(
-                    color: context.palette.surfaceRaised,
-                    border: Border.all(color: context.palette.border),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.link_rounded, size: 20),
-                      const SizedBox(width: 11),
-                      Expanded(
-                          child: Text(link.value,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style:
-                                  TextStyle(color: context.palette.textMuted))),
-                      IconButton(
-                        tooltip: '复制链接',
-                        onPressed: () =>
-                            Clipboard.setData(ClipboardData(text: link.value)),
-                        icon: const Icon(Icons.copy_rounded, size: 19),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 15),
-                Row(
-                  children: [
-                    Checkbox(
-                        value: clipboardDetectionEnabled,
-                        onChanged: (value) =>
-                            onClipboardDetectionChanged(value ?? true)),
-                    Expanded(
-                      child: Text('以后检测到链接时提醒我',
-                          style: TextStyle(
-                              color: context.palette.textMuted, fontSize: 13)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                if (compact)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      FilledButton.icon(
-                          onPressed: onParse,
-                          icon: const Icon(Icons.auto_awesome_rounded),
-                          label: const Text('立即解析')),
-                      const SizedBox(height: 9),
-                      OutlinedButton(
-                          onPressed: onIgnore, child: const Text('忽略')),
-                    ],
-                  )
-                else
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      SizedBox(
-                          width: 150,
-                          child: OutlinedButton(
-                              onPressed: onIgnore, child: const Text('忽略'))),
-                      const SizedBox(width: 10),
-                      SizedBox(
-                          width: 190,
-                          child: FilledButton.icon(
-                              onPressed: onParse,
-                              icon: const Icon(Icons.auto_awesome_rounded),
-                              label: const Text('立即解析'))),
-                    ],
-                  ),
-              ],
-            );
-            if (compact) return content;
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(flex: 7, child: content),
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 3,
-                  child: Semantics(
-                    image: true,
-                    label: 'langbai 产品形象正在挥手',
-                    child: Image.asset('assets/images/langbai_mascot.png',
-                        height: 300, fit: BoxFit.contain),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
 class _ManualLinkPanel extends StatelessWidget {
   const _ManualLinkPanel({
-    super.key,
     required this.controller,
     required this.onPaste,
     required this.onSubmit,
-    required this.onCheckClipboard,
-    required this.clipboardDetectionEnabled,
-    required this.onClipboardDetectionChanged,
   });
 
   final TextEditingController controller;
   final VoidCallback onPaste;
   final VoidCallback onSubmit;
-  final VoidCallback onCheckClipboard;
-  final bool clipboardDetectionEnabled;
-  final ValueChanged<bool> onClipboardDetectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -341,21 +131,6 @@ class _ManualLinkPanel extends StatelessWidget {
                     onPressed: onSubmit,
                     icon: const Icon(Icons.auto_awesome_rounded),
                     label: const Text('识别链接')),
-                const SizedBox(height: 8),
-                TextButton.icon(
-                    onPressed: onCheckClipboard,
-                    icon: const Icon(Icons.content_paste_search_rounded),
-                    label: const Text('检查剪贴板')),
-                const SizedBox(height: 8),
-                SwitchListTile.adaptive(
-                  contentPadding: EdgeInsets.zero,
-                  value: clipboardDetectionEnabled,
-                  onChanged: onClipboardDetectionChanged,
-                  title: const Text('进入应用时识别剪贴板链接',
-                      style: TextStyle(fontSize: 14)),
-                  subtitle:
-                      const Text('只识别，解析前始终询问', style: TextStyle(fontSize: 12)),
-                ),
               ],
             );
             if (compact) return form;

@@ -110,6 +110,14 @@ class LangbaiTheme {
       brightness: brightness,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: background,
+      fontFamily: 'Segoe UI',
+      fontFamilyFallback: const [
+        'Microsoft YaHei UI',
+        'PingFang SC',
+        'Noto Sans CJK SC',
+        'Noto Sans SC',
+        'sans-serif',
+      ],
       extensions: [palette],
     );
     return base.copyWith(

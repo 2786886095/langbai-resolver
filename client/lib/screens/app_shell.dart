@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/download_record.dart';
 import '../models/media_models.dart';
@@ -38,17 +41,16 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _parserRevision = 0;
   String? _parserInitialUrl;
   String? _toolInitialInput;
-  DetectedLink? _detectedLink;
   String? _lastClipboardValue;
-  bool _clipboardDetectionEnabled = true;
   bool _automaticUpdateChecksEnabled = true;
   bool _checkingForUpdate = false;
+  String? _downloadDirectory;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _restoreClipboardPreference();
+    _restorePreferences();
   }
 
   @override
@@ -62,19 +64,19 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) _checkClipboard();
   }
 
-  Future<void> _restoreClipboardPreference() async {
+  Future<void> _restorePreferences() async {
     final preferences = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _clipboardDetectionEnabled =
-          preferences.getBool('clipboard_detection_enabled') ?? true;
       _automaticUpdateChecksEnabled =
           preferences.getBool('automatic_update_checks_enabled') ?? true;
+      _downloadDirectory = preferences.getString('download_directory');
     });
     if (_demoClipboardLink.isNotEmpty) {
       final detected = _linkDetector.detect(_demoClipboardLink);
       if (detected != null && mounted) {
-        setState(() => _detectedLink = detected);
+        _lastClipboardValue = detected.value;
+        _parseDetected(detected);
       }
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -83,32 +85,52 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _checkClipboard({bool force = false}) async {
-    if (!_clipboardDetectionEnabled && !force) return;
+  Future<void> _checkClipboard() async {
     try {
       final detected = await _linkDetector.readClipboard();
       if (!mounted || detected == null) return;
-      if (!force && detected.value == _lastClipboardValue) return;
-      setState(() {
-        _lastClipboardValue = detected.value;
-        _detectedLink = detected;
-        _selectedIndex = 0;
-      });
+      if (detected.value == _lastClipboardValue) return;
+      _lastClipboardValue = detected.value;
+      _parseDetected(detected);
     } on Object {
       // Clipboard access may be denied by the platform; manual paste remains available.
     }
-  }
-
-  Future<void> _setClipboardDetection(bool value) async {
-    setState(() => _clipboardDetectionEnabled = value);
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setBool('clipboard_detection_enabled', value);
   }
 
   Future<void> _setAutomaticUpdateChecks(bool value) async {
     setState(() => _automaticUpdateChecksEnabled = value);
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool('automatic_update_checks_enabled', value);
+  }
+
+  bool get _supportsDirectorySelection =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  Future<void> _pickDownloadDirectory() async {
+    try {
+      final path = await getDirectoryPath(
+        confirmButtonText: '选择保存文件夹',
+      );
+      if (path == null || path.trim().isEmpty || !mounted) return;
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setString('download_directory', path.trim());
+      if (mounted) setState(() => _downloadDirectory = path.trim());
+    } on Object catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法选择文件夹：$error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearDownloadDirectory() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove('download_directory');
+    if (mounted) setState(() => _downloadDirectory = null);
   }
 
   Future<void> _checkForUpdates({bool announceLatest = false}) async {
@@ -257,7 +279,13 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         link.kind == DetectedLinkKind.torrent) {
       setState(() {
         _toolInitialInput = link.value;
-        _detectedLink = null;
+        _selectedIndex = 3;
+      });
+      return;
+    }
+    if (link.kind == DetectedLinkKind.direct) {
+      setState(() {
+        _toolInitialInput = link.value;
         _selectedIndex = 3;
       });
       return;
@@ -265,7 +293,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     setState(() {
       _parserInitialUrl = link.value;
       _parserRevision += 1;
-      _detectedLink = null;
       _selectedIndex = 1;
     });
   }
@@ -275,8 +302,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (detected == null) return;
     _parseDetected(detected);
   }
-
-  void _ignoreDetected() => setState(() => _detectedLink = null);
 
   void _openTool(String toolId) {
     setState(() {
@@ -309,66 +334,102 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           title: const Text('设置'),
           content: SizedBox(
             width: 440,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text('外观', style: TextStyle(fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                SegmentedButton<ThemeMode>(
-                  segments: const [
-                    ButtonSegment(value: ThemeMode.system, label: Text('跟随系统')),
-                    ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
-                    ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
-                  ],
-                  selected: {widget.themeMode},
-                  onSelectionChanged: (value) {
-                    widget.onThemeModeChanged(value.first);
-                    setDialogState(() {});
-                  },
-                ),
-                const SizedBox(height: 20),
-                SwitchListTile.adaptive(
-                  contentPadding: EdgeInsets.zero,
-                  value: _clipboardDetectionEnabled,
-                  onChanged: (value) {
-                    _setClipboardDetection(value);
-                    setDialogState(() {});
-                  },
-                  title: const Text('识别剪贴板链接'),
-                  subtitle: const Text('只识别，解析前始终询问'),
-                ),
-                const SizedBox(height: 12),
-                const Text('更新', style: TextStyle(fontWeight: FontWeight.w800)),
-                const SizedBox(height: 6),
-                SwitchListTile.adaptive(
-                  contentPadding: EdgeInsets.zero,
-                  value: _automaticUpdateChecksEnabled,
-                  onChanged: (value) {
-                    _setAutomaticUpdateChecks(value);
-                    setDialogState(() {});
-                  },
-                  title: const Text('启动时自动检查更新'),
-                  subtitle: const Text('当前版本 $appVersion · 全平台支持检测'),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: OutlinedButton.icon(
-                    onPressed: _checkingForUpdate
-                        ? null
-                        : () {
-                            Navigator.pop(dialogContext);
-                            _checkForUpdates(announceLatest: true);
-                          },
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: const Text('立即检查更新'),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('外观',
+                      style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 8),
+                  SegmentedButton<ThemeMode>(
+                    segments: const [
+                      ButtonSegment(
+                          value: ThemeMode.system, label: Text('跟随系统')),
+                      ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
+                      ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
+                    ],
+                    selected: {widget.themeMode},
+                    onSelectionChanged: (value) {
+                      widget.onThemeModeChanged(value.first);
+                      setDialogState(() {});
+                    },
                   ),
-                ),
-                const SizedBox(height: 12),
-                Text('解析服务地址可在“解析”页面右上角调整。',
-                    style: TextStyle(
-                        color: dialogContext.palette.textMuted, fontSize: 12)),
-              ],
+                  const SizedBox(height: 20),
+                  const Text('下载',
+                      style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 6),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.folder_outlined),
+                    title: const Text('默认保存路径'),
+                    subtitle: Text(
+                      _supportsDirectorySelection
+                          ? (_downloadDirectory ?? '每次下载时选择保存位置')
+                          : '移动端下载后由系统面板选择保存位置',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (_supportsDirectorySelection)
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            await _pickDownloadDirectory();
+                            setDialogState(() {});
+                          },
+                          icon: const Icon(Icons.folder_open_rounded),
+                          label: Text(
+                            _downloadDirectory == null ? '选择文件夹' : '更改文件夹',
+                          ),
+                        ),
+                        if (_downloadDirectory != null)
+                          TextButton(
+                            onPressed: () async {
+                              await _clearDownloadDirectory();
+                              setDialogState(() {});
+                            },
+                            child: const Text('恢复每次询问'),
+                          ),
+                      ],
+                    ),
+                  const SizedBox(height: 18),
+                  const Text('更新',
+                      style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 6),
+                  SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    value: _automaticUpdateChecksEnabled,
+                    onChanged: (value) {
+                      _setAutomaticUpdateChecks(value);
+                      setDialogState(() {});
+                    },
+                    title: const Text('启动时自动检查更新'),
+                    subtitle: const Text('当前版本 $appVersion · 全平台支持检测'),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: _checkingForUpdate
+                          ? null
+                          : () {
+                              Navigator.pop(dialogContext);
+                              _checkForUpdates(announceLatest: true);
+                            },
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('立即检查更新'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('解析服务地址可在“解析”页面右上角调整。',
+                      style: TextStyle(
+                          color: dialogContext.palette.textMuted,
+                          fontSize: 12)),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -394,8 +455,20 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           height: 52,
         ),
       ),
-      children: const [
-        Text('跨平台公开媒体解析、转换与下载工作台。仅处理你有权使用的公开、无 DRM 内容。'),
+      children: [
+        const Text('跨平台公开媒体解析、转换与下载工作台。仅处理你有权使用的公开、无 DRM 内容。'),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () => launchUrl(
+              Uri.parse('https://github.com/2786886095/langbai-resolver'),
+              mode: LaunchMode.externalApplication,
+            ),
+            icon: const Icon(Icons.code_rounded),
+            label: const Text('GitHub · langbai-resolver'),
+          ),
+        ),
       ],
     );
   }
@@ -404,13 +477,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final pages = <Widget>[
       DashboardPage(
-        detectedLink: _detectedLink,
-        clipboardDetectionEnabled: _clipboardDetectionEnabled,
         recentDownloads: _downloads.values.toList().reversed.toList(),
-        onParseDetected: _parseDetected,
-        onIgnoreDetected: _ignoreDetected,
-        onClipboardDetectionChanged: _setClipboardDetection,
-        onCheckClipboard: () => _checkClipboard(force: true),
         onParseManual: _parseManual,
         onOpenTool: _openTool,
         onShowAllTasks: () => setState(() => _selectedIndex = 2),
@@ -667,8 +734,17 @@ class _Brand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final label = Text(
+      'langbai解析',
+      maxLines: 1,
+      style: TextStyle(
+        fontSize: compact ? 17 : 18,
+        fontWeight: FontWeight.w800,
+        letterSpacing: -.3,
+      ),
+    );
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisSize: compact ? MainAxisSize.min : MainAxisSize.max,
       children: [
         Container(
           width: compact ? 34 : 38,
@@ -683,14 +759,16 @@ class _Brand extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 9),
-        Text(
-          'langbai解析',
-          style: TextStyle(
-            fontSize: compact ? 17 : 18,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -.3,
+        if (compact)
+          label
+        else
+          Expanded(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: label,
+            ),
           ),
-        ),
       ],
     );
   }

@@ -47,6 +47,21 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.0.0 · 全平台支持检测'), findsOneWidget);
+    expect(find.text('当前版本 1.0.1 · 全平台支持检测'), findsOneWidget);
+    expect(find.text('默认保存路径'), findsOneWidget);
+  });
+
+  testWidgets('shows the GitHub repository in about', (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(const LangbaiResolverApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('关于').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('GitHub · langbai-resolver'), findsOneWidget);
   });
 }

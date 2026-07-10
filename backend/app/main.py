@@ -33,7 +33,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.0",
+    version="1.0.1",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(
@@ -96,7 +96,7 @@ async def resolve_media(request: ResolveRequest) -> MediaInfo:
 
 
 @app.post("/api/v1/jobs", response_model=DownloadJob, status_code=202)
-def create_job(request: CreateJobRequest) -> DownloadJob:
+async def create_job(request: CreateJobRequest) -> DownloadJob:
     try:
         return jobs.create(request.media_id, request.option_id)
     except KeyError as exc:
@@ -176,9 +176,12 @@ async def process_local_media(
 
 
 @app.post("/api/v1/tools/transfer", response_model=DownloadJob, status_code=202)
-def create_transfer(request: TransferRequest) -> DownloadJob:
+async def create_transfer(request: TransferRequest) -> DownloadJob:
     try:
-        return jobs.create_transfer(request.source)
+        sources = [item.strip() for item in request.sources if item.strip()]
+        if request.source and request.source.strip():
+            sources.insert(0, request.source.strip())
+        return jobs.create_transfer(sources)
     except (ValueError, UnsafeUrlError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
