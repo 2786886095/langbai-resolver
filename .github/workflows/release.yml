@@ -6,7 +6,7 @@ on:
       version:
         description: Release version without v prefix
         required: true
-        default: 1.0.7
+        default: 1.0.8
   push:
     tags:
       - "v*"
@@ -165,7 +165,7 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "B站扫码登录下载最高画质，修复 iOS CA 证书，Android 改用固定发布签名。" --assets release-assets --output release-assets/update-manifest.json
+          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库。" --assets release-assets --output release-assets/update-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

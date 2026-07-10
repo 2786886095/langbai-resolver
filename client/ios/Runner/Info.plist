@@ -30,6 +30,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于连接你配置的局域网解析服务。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于将你选择下载的视频和图片保存到系统相册。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于将你选择下载的视频和图片保存到系统相册。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

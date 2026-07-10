@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/media_models.dart';
+import 'download_types.dart';
 
 class LocalDownloadResult {
   const LocalDownloadResult({
@@ -54,6 +55,8 @@ class LocalMediaService {
   Future<LocalDownloadResult> download({
     required String mediaId,
     required String optionId,
+    required AssetKind kind,
+    required SaveDestination destination,
     ValueChanged<double>? onProgress,
   }) async {
     final processId =
@@ -64,6 +67,8 @@ class LocalMediaService {
         'media_id': mediaId,
         'option_id': optionId,
         'process_id': processId,
+        'media_type': kind.name,
+        'save_destination': destination.name,
       });
       final json = _normalize(raw);
       if (json is! Map<String, dynamic>) {

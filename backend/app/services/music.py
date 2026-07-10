@@ -13,7 +13,7 @@ import httpx
 from app.models import MusicFile, MusicSearchResult
 
 
-_USER_AGENT = "langbai-resolver/1.0.7 (https://github.com/2786886095/langbai-resolver)"
+_USER_AGENT = "langbai-resolver/1.0.8 (https://github.com/2786886095/langbai-resolver)"
 
 
 def _plain_text(value: object) -> str | None:

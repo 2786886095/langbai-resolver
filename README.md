@@ -8,6 +8,7 @@
 
 - 使用 yt-dlp 2026.07.04 的 1,700+ 个站点解析器并提供通用网页兜底，可选择视频分辨率、音频、封面和图片。
 - B站支持本机二维码登录，会话加密保存，可解析账号可见的 1080P、4K、HDR 等最高画质并自动合并最高音质。
+- Android 与 iOS 下载视频或图片时可选择保存到文件或系统相册；音频继续保存到文件目录。
 - 静态网页媒体嗅探、单链接八段并发、多镜像线路交叉下载、磁力链接和 `.torrent` 种子任务。
 - 本地视频提取音频、视频压缩、图片压缩和媒体信息读取。
 - 聚合 Internet Archive、Wikimedia Commons、Audius、Apple Music 和 MusicBrainz；仅对来源明确授权的文件提供下载。
@@ -59,7 +60,7 @@ Windows Setup（需要 Flutter、Visual Studio C++ 桌面工作负载和 Inno Se
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.0.7" `
+  -Version "1.0.8" `
   -UpdateManifestUrl "https://github.com/你的账号/langbai-resolver/releases/latest/download/update-manifest.json"
 ```
 
@@ -83,7 +84,7 @@ UPDATE_MANIFEST_URL="https://github.com/你的账号/langbai-resolver/releases/l
 
 ## GitHub Release 与自动更新
 
-推送 `v1.0.7` 形式的标签，`release.yml` 会自动生成并发布：
+推送 `v1.0.8` 形式的标签，`release.yml` 会自动生成并发布：
 
 - `langbai-resolver-Setup.exe`
 - `langbai-resolver-Android.apk`

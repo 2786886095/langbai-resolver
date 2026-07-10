@@ -5,8 +5,10 @@ import 'download_types.dart';
 Future<SaveResult> saveDownload(
   Uri uri,
   String filename,
-  DownloadProgress onProgress,
-) async {
+  DownloadProgress onProgress, {
+  SaveDestination destination = SaveDestination.files,
+  String mediaType = 'file',
+}) async {
   final opened = await launchUrl(
     uri,
     mode: LaunchMode.externalApplication,

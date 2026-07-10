@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -52,6 +53,10 @@ class _ParserPageState extends State<ParserPage> {
   bool _bilibiliAuthBusy = false;
 
   bool get _usesLocalParser => LocalMediaService.isSupported;
+  bool get _isMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
   bool get _bilibiliLoginAvailable {
     if (!BilibiliAuthService.isSupported) return false;
     if (_usesLocalParser) return true;
@@ -202,6 +207,8 @@ class _ParserPageState extends State<ParserPage> {
     final media = _media;
     final option = _selected;
     if (media == null || option == null || _saving) return;
+    final destination = await _chooseSaveDestination(option);
+    if (destination == null || !mounted) return;
     setState(() {
       _error = null;
       _saving = true;
@@ -209,7 +216,7 @@ class _ParserPageState extends State<ParserPage> {
     });
     try {
       if (_usesLocalParser) {
-        await _startLocalDownload(media, option);
+        await _startLocalDownload(media, option, destination);
         return;
       }
       var job = await _api.createJob(media.mediaId, option.id);
@@ -233,10 +240,12 @@ class _ParserPageState extends State<ParserPage> {
         (progress) {
           if (mounted) setState(() => _saveProgress = progress);
         },
+        destination: destination,
+        mediaType: option.kind.name,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.path ?? result.message)),
+        SnackBar(content: Text(result.message)),
       );
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -252,6 +261,7 @@ class _ParserPageState extends State<ParserPage> {
   Future<void> _startLocalDownload(
     MediaInfo media,
     MediaOption option,
+    SaveDestination destination,
   ) async {
     final jobId =
         'local-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
@@ -269,6 +279,8 @@ class _ParserPageState extends State<ParserPage> {
       result = await LocalMediaService.instance.download(
         mediaId: media.mediaId,
         optionId: option.id,
+        kind: option.kind,
+        destination: destination,
         onProgress: (progress) {
           if (!mounted) return;
           job = DownloadJob(
@@ -311,6 +323,59 @@ class _ParserPageState extends State<ParserPage> {
     widget.onJobChanged?.call(job, media, option);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(result.message)),
+    );
+  }
+
+  Future<SaveDestination?> _chooseSaveDestination(
+    MediaOption option,
+  ) async {
+    if (!_isMobile || option.kind == AssetKind.audio) {
+      return SaveDestination.files;
+    }
+    final typeLabel = option.kind == AssetKind.video ? '视频' : '图片';
+    return showModalBottomSheet<SaveDestination>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '保存到哪里？',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '选择$typeLabel的保存位置',
+                style: TextStyle(color: context.palette.textMuted),
+              ),
+              const SizedBox(height: 16),
+              _SaveDestinationTile(
+                icon: Icons.folder_rounded,
+                title: '保存到文件',
+                subtitle: defaultTargetPlatform == TargetPlatform.android
+                    ? '保存到 Download/langbai解析'
+                    : '保存到“文件”App/langbai解析',
+                onTap: () => Navigator.pop(context, SaveDestination.files),
+              ),
+              const SizedBox(height: 10),
+              _SaveDestinationTile(
+                icon: option.kind == AssetKind.video
+                    ? Icons.video_library_rounded
+                    : Icons.photo_library_rounded,
+                title: '保存到相册',
+                subtitle: '保存到系统照片库，首次使用会请求权限',
+                onTap: () => Navigator.pop(context, SaveDestination.gallery),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -937,6 +1002,72 @@ class _OptionTile extends StatelessWidget {
                   child: Icon(Icons.merge_rounded,
                       size: 19, color: context.palette.textMuted),
                 ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SaveDestinationTile extends StatelessWidget {
+  const _SaveDestinationTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: context.palette.surfaceRaised,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(
+                  icon,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        color: context.palette.textMuted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded),
             ],
           ),
         ),
