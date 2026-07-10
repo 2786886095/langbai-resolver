@@ -1,0 +1,47 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "client/**"
+      - ".github/workflows/build-unsigned-ipa.yml"
+
+env:
+  APP_VERSION: "1.0.0"
+  UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
+
+jobs:
+  build:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Build iOS app without signing
+        run: >-
+          flutter build ios --release --no-codesign
+          --build-name "${APP_VERSION}"
+          --dart-define="APP_VERSION=${APP_VERSION}"
+          --dart-define="UPDATE_MANIFEST_URL=${UPDATE_MANIFEST_URL}"
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
+          cd build/ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload langbai-resolver-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: langbai-resolver-unsigned-ipa
+          path: client/build/ipa/langbai-resolver-unsigned.ipa
+          if-no-files-found: error

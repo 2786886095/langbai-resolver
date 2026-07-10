@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "notes": "langbai解析 1.0.0 更新",
+  "published_at": "2026-07-10T00:00:00Z",
+  "platforms": {
+    "windows": {
+      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Setup.exe",
+      "sha256": ""
+    },
+    "android": {
+      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Android.apk"
+    },
+    "ios": {
+      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-iOS.ipa"
+    },
+    "web": {
+      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Web.zip"
+    }
+  }
+}

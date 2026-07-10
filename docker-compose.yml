@@ -1,0 +1,17 @@
+services:
+  media-harbor-api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      MEDIA_HARBOR_CORS_ORIGINS: "*"
+      MEDIA_HARBOR_MAX_CONCURRENT_JOBS: "2"
+      MEDIA_HARBOR_JOB_TTL_SECONDS: "21600"
+    volumes:
+      - media-harbor-downloads:/data/downloads
+
+volumes:
+  media-harbor-downloads:
+

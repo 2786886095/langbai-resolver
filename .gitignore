@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.tmp-*/
+downloads/
+dist/
+backend/downloads/
+backend/cache/
+client/.dart_tool/
+client/build/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+*.ipa
+*.apk
+*.aab

@@ -1,0 +1,725 @@
+import 'dart:async';
+
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/media_models.dart';
+import '../services/api_client.dart';
+import '../services/download_saver.dart';
+import '../theme/langbai_theme.dart';
+
+const _defaultToolsApiUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://127.0.0.1:8787',
+);
+
+class ToolsPage extends StatefulWidget {
+  const ToolsPage({super.key, this.initialInput, required this.onOpenParser});
+
+  final String? initialInput;
+  final ValueChanged<String> onOpenParser;
+
+  @override
+  State<ToolsPage> createState() => _ToolsPageState();
+}
+
+class _ToolsPageState extends State<ToolsPage> {
+  String? _selectedTool;
+  XFile? _selectedFile;
+  late final TextEditingController _inputController;
+  late ApiClient _api;
+  bool _busy = false;
+  String? _error;
+  DownloadJob? _job;
+  double _saveProgress = 0;
+  double _quality = 78;
+  String _audioFormat = 'mp3';
+  List<MusicSearchResult> _musicResults = const [];
+  List<MusicFile> _musicFiles = const [];
+  List<SniffedResource> _sniffedResources = const [];
+
+  static const _tools = [
+    _ToolDefinition('parser', '视频与图片解析', '解析网页媒体、分辨率、音频和封面',
+        Icons.play_circle_outline_rounded),
+    _ToolDefinition(
+        'sniff', '网页嗅探', '识别页面中的媒体与播放列表请求', Icons.travel_explore_rounded),
+    _ToolDefinition(
+        'audio', '视频提取音频', '导出 MP3、M4A、FLAC 或原始音轨', Icons.graphic_eq_rounded),
+    _ToolDefinition(
+        'compress', '媒体压缩', '视频和图片按目标大小缩小体积', Icons.compress_rounded),
+    _ToolDefinition(
+        'music', '无损音乐搜索', '搜索合法开放来源的 FLAC / WAV', Icons.headphones_rounded),
+    _ToolDefinition('direct', '直链并发下载', '四路分段并发与自动合并', Icons.link_rounded),
+    _ToolDefinition(
+        'transfer', '磁力与种子', 'BT / Magnet 任务与文件选择', Icons.hub_outlined),
+    _ToolDefinition(
+        'metadata', '媒体信息', '查看编码、码率、分辨率和元数据', Icons.info_outline_rounded),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _inputController = TextEditingController();
+    _api = ApiClient(_defaultToolsApiUrl);
+    _restoreApiUrl();
+    _applyInitialInput(widget.initialInput);
+  }
+
+  Future<void> _restoreApiUrl() async {
+    final preferences = await SharedPreferences.getInstance();
+    final saved = preferences.getString('api_base_url')?.trim();
+    if (!mounted || saved == null || saved.isEmpty || saved == _api.baseUrl) {
+      return;
+    }
+    _api.close();
+    _api = ApiClient(saved);
+  }
+
+  @override
+  void didUpdateWidget(covariant ToolsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialInput != oldWidget.initialInput) {
+      _applyInitialInput(widget.initialInput);
+    }
+  }
+
+  void _applyInitialInput(String? value) {
+    if (value == null || value.isEmpty) return;
+    final tool = _tools.any((item) => item.id == value)
+        ? value
+        : value.startsWith('magnet:') || value.endsWith('.torrent')
+            ? 'transfer'
+            : 'direct';
+    _selectedTool = tool;
+    if (tool == 'transfer' || tool == 'direct') _inputController.text = value;
+  }
+
+  @override
+  void dispose() {
+    _api.close();
+    _inputController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickFile() async {
+    final file = await openFile();
+    if (file == null || !mounted) return;
+    setState(() => _selectedFile = file);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(26, 28, 26, 42),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1120),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('工具箱',
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 6),
+                Text('解析、转换和高级下载集中在一个工作台',
+                    style: TextStyle(color: context.palette.textMuted)),
+                const SizedBox(height: 24),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final columns = constraints.maxWidth >= 900
+                        ? 4
+                        : constraints.maxWidth >= 620
+                            ? 3
+                            : constraints.maxWidth >= 420
+                                ? 2
+                                : 1;
+                    final width =
+                        (constraints.maxWidth - (columns - 1) * 12) / columns;
+                    return Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        for (final tool in _tools)
+                          SizedBox(
+                            width: width,
+                            child: _ToolCard(
+                              tool: tool,
+                              selected: _selectedTool == tool.id,
+                              onTap: () {
+                                if (tool.id == 'parser') {
+                                  setState(() => _selectedTool = tool.id);
+                                } else {
+                                  setState(() => _selectedTool = tool.id);
+                                }
+                              },
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+                if (_selectedTool != null) ...[
+                  const SizedBox(height: 20),
+                  _ToolWorkspace(
+                    tool: _tools.firstWhere((item) => item.id == _selectedTool),
+                    inputController: _inputController,
+                    selectedFile: _selectedFile,
+                    quality: _quality,
+                    audioFormat: _audioFormat,
+                    busy: _busy,
+                    onPickFile: _pickFile,
+                    onQualityChanged: (value) =>
+                        setState(() => _quality = value),
+                    onAudioFormatChanged: (value) =>
+                        setState(() => _audioFormat = value),
+                    onRun: _runSelectedTool,
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    _ToolError(message: _error!),
+                  ],
+                  if (_job != null) ...[
+                    const SizedBox(height: 12),
+                    _ToolProgress(job: _job!, saveProgress: _saveProgress),
+                  ],
+                  if (_musicResults.isNotEmpty ||
+                      _musicFiles.isNotEmpty ||
+                      _sniffedResources.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _ToolResults(
+                      musicResults: _musicResults,
+                      musicFiles: _musicFiles,
+                      sniffedResources: _sniffedResources,
+                      onOpenMusic: _loadMusicFiles,
+                      onDownloadUrl: widget.onOpenParser,
+                    ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runSelectedTool() async {
+    final tool = _selectedTool;
+    if (tool == null || _busy) return;
+    final input = _inputController.text.trim();
+    if (tool == 'parser' || tool == 'direct') {
+      if (input.isEmpty) {
+        setState(() => _error = '请先输入链接');
+      } else {
+        widget.onOpenParser(input);
+      }
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _job = null;
+      _saveProgress = 0;
+      _musicResults = const [];
+      _musicFiles = const [];
+      _sniffedResources = const [];
+    });
+    try {
+      if (tool == 'sniff') {
+        if (input.isEmpty) throw const ApiException('请输入要嗅探的网页链接');
+        final result = await _api.sniff(input);
+        if (mounted) setState(() => _sniffedResources = result.resources);
+      } else if (tool == 'music') {
+        if (input.isEmpty) throw const ApiException('请输入歌曲、歌手或专辑');
+        final results = await _api.searchMusic(input);
+        if (mounted) setState(() => _musicResults = results);
+      } else if (tool == 'transfer') {
+        final torrentFile = _selectedFile;
+        if (torrentFile != null &&
+            torrentFile.name.toLowerCase().endsWith('.torrent')) {
+          await _monitorAndSave(await _api.createTorrentFile(torrentFile));
+        } else {
+          if (input.isEmpty) {
+            throw const ApiException('请输入 Magnet/种子链接，或选择 .torrent 文件');
+          }
+          await _monitorAndSave(await _api.createTransfer(input));
+        }
+      } else {
+        final file = _selectedFile;
+        if (file == null) throw const ApiException('请先选择本地文件');
+        final operation = switch (tool) {
+          'audio' => 'extract_audio',
+          'compress' =>
+            _isImage(file.name) ? 'compress_image' : 'compress_video',
+          'metadata' => 'metadata',
+          _ => throw const ApiException('不支持的工具操作'),
+        };
+        final output = operation == 'extract_audio'
+            ? _audioFormat
+            : operation == 'compress_image'
+                ? 'webp'
+                : '';
+        final job = await _api.createToolJob(
+          file: file,
+          operation: operation,
+          outputFormat: output,
+          quality: _quality.round(),
+        );
+        await _monitorAndSave(job);
+      }
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on TimeoutException {
+      if (mounted) setState(() => _error = '任务请求超时，请稍后重试');
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = '任务失败：$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _loadMusicFiles(MusicSearchResult result) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final files = await _api.musicFiles(result.identifier);
+      if (mounted) setState(() => _musicFiles = files);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _monitorAndSave(DownloadJob initial) async {
+    var job = initial;
+    if (mounted) setState(() => _job = job);
+    while (job.state == JobState.queued || job.state == JobState.running) {
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      job = await _api.getJob(job.id);
+      if (!mounted) return;
+      setState(() => _job = job);
+    }
+    if (job.state == JobState.failed) {
+      throw ApiException(job.error ?? '服务器处理失败');
+    }
+    final result = await saveDownload(
+      _api.fileUri(job.id),
+      job.filename ?? 'langbai-output.bin',
+      (progress) {
+        if (mounted) setState(() => _saveProgress = progress);
+      },
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result.path ?? result.message)),
+    );
+  }
+
+  bool _isImage(String name) {
+    final extension =
+        name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    return const {'jpg', 'jpeg', 'png', 'webp', 'avif', 'gif'}
+        .contains(extension);
+  }
+}
+
+class _ToolDefinition {
+  const _ToolDefinition(this.id, this.title, this.description, this.icon);
+
+  final String id;
+  final String title;
+  final String description;
+  final IconData icon;
+}
+
+class _ToolCard extends StatelessWidget {
+  const _ToolCard(
+      {required this.tool, required this.selected, required this.onTap});
+
+  final _ToolDefinition tool;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: selected ? context.palette.navigationSelected : null,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(tool.icon,
+                  color: Theme.of(context).colorScheme.primary, size: 28),
+              const SizedBox(height: 18),
+              Text(tool.title,
+                  style: const TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 6),
+              Text(tool.description,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: context.palette.textMuted,
+                      fontSize: 12,
+                      height: 1.45)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolWorkspace extends StatelessWidget {
+  const _ToolWorkspace({
+    required this.tool,
+    required this.inputController,
+    required this.selectedFile,
+    required this.quality,
+    required this.audioFormat,
+    required this.busy,
+    required this.onPickFile,
+    required this.onQualityChanged,
+    required this.onAudioFormatChanged,
+    required this.onRun,
+  });
+
+  final _ToolDefinition tool;
+  final TextEditingController inputController;
+  final XFile? selectedFile;
+  final double quality;
+  final String audioFormat;
+  final bool busy;
+  final VoidCallback onPickFile;
+  final ValueChanged<double> onQualityChanged;
+  final ValueChanged<String> onAudioFormatChanged;
+  final VoidCallback onRun;
+
+  bool get _needsFile =>
+      const {'audio', 'compress', 'metadata', 'transfer'}.contains(tool.id);
+  bool get _needsInput => const {
+        'parser',
+        'sniff',
+        'music',
+        'direct',
+        'transfer'
+      }.contains(tool.id);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(tool.icon, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 10),
+                Text(tool.title,
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.w800)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(tool.description,
+                style: TextStyle(color: context.palette.textMuted)),
+            const SizedBox(height: 18),
+            if (_needsInput)
+              TextField(
+                controller: inputController,
+                decoration: InputDecoration(
+                  labelText: tool.id == 'music' ? '歌曲、歌手或专辑' : '链接 / Magnet',
+                  prefixIcon: Icon(tool.id == 'music'
+                      ? Icons.search_rounded
+                      : Icons.link_rounded),
+                ),
+              ),
+            if (_needsFile) ...[
+              OutlinedButton.icon(
+                  onPressed: busy ? null : onPickFile,
+                  icon: const Icon(Icons.file_open_outlined),
+                  label: Text(
+                      tool.id == 'transfer' ? '选择 .torrent 种子文件' : '选择本地文件')),
+              if (selectedFile != null) ...[
+                const SizedBox(height: 8),
+                Text(selectedFile!.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: context.palette.textMuted, fontSize: 12)),
+              ],
+            ],
+            if (tool.id == 'audio') ...[
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                value: audioFormat,
+                decoration: const InputDecoration(labelText: '输出格式'),
+                items: const [
+                  DropdownMenuItem(value: 'mp3', child: Text('MP3 · 320 kbps')),
+                  DropdownMenuItem(value: 'm4a', child: Text('M4A · 256 kbps')),
+                  DropdownMenuItem(value: 'flac', child: Text('FLAC · 无损')),
+                  DropdownMenuItem(value: 'wav', child: Text('WAV · PCM')),
+                ],
+                onChanged: busy
+                    ? null
+                    : (value) {
+                        if (value != null) onAudioFormatChanged(value);
+                      },
+              ),
+            ],
+            if (tool.id == 'compress') ...[
+              const SizedBox(height: 14),
+              Text('质量 ${quality.round()}%',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Slider(
+                value: quality,
+                min: 20,
+                max: 95,
+                divisions: 15,
+                label: '${quality.round()}%',
+                onChanged: busy ? null : onQualityChanged,
+              ),
+            ],
+            if (tool.id == 'music') ...[
+              const SizedBox(height: 10),
+              Text('仅搜索 Internet Archive 等合法开放来源；不绕过付费或版权限制。',
+                  style: TextStyle(
+                      color: context.palette.textMuted, fontSize: 12)),
+            ],
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                  onPressed: busy ? null : onRun,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow_rounded),
+                  label: Text(busy ? '处理中…' : '开始任务')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolError extends StatelessWidget {
+  const _ToolError({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.errorContainer,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).colorScheme.error),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline_rounded,
+              color: Theme.of(context).colorScheme.error),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolProgress extends StatelessWidget {
+  const _ToolProgress({required this.job, required this.saveProgress});
+
+  final DownloadJob job;
+  final double saveProgress;
+
+  @override
+  Widget build(BuildContext context) {
+    final saving = job.state == JobState.completed && saveProgress < 1;
+    final value = saving ? saveProgress : job.progress;
+    final label = switch (job.state) {
+      JobState.queued => '等待服务器处理',
+      JobState.running => '正在处理',
+      JobState.completed => saving ? '正在保存到设备' : '任务完成',
+      JobState.failed => '任务失败',
+    };
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                    child: Text(label,
+                        style: const TextStyle(fontWeight: FontWeight.w700))),
+                Text('${(value * 100).round()}%',
+                    style: TextStyle(color: context.palette.textMuted)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            LinearProgressIndicator(
+              value: value <= 0 ? null : value,
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolResults extends StatelessWidget {
+  const _ToolResults({
+    required this.musicResults,
+    required this.musicFiles,
+    required this.sniffedResources,
+    required this.onOpenMusic,
+    required this.onDownloadUrl,
+  });
+
+  final List<MusicSearchResult> musicResults;
+  final List<MusicFile> musicFiles;
+  final List<SniffedResource> sniffedResources;
+  final ValueChanged<MusicSearchResult> onOpenMusic;
+  final ValueChanged<String> onDownloadUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              musicFiles.isNotEmpty
+                  ? '可用音频文件'
+                  : musicResults.isNotEmpty
+                      ? '开放音乐搜索结果'
+                      : '嗅探到的媒体资源',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          Divider(height: 1, color: context.palette.border),
+          if (musicFiles.isNotEmpty)
+            for (final file in musicFiles.take(24))
+              _ResultRow(
+                icon: Icons.audio_file_outlined,
+                title: file.name,
+                subtitle:
+                    '${file.format}${file.size == null ? '' : ' · ${_humanBytes(file.size!)}'}',
+                actionLabel: '下载',
+                onTap: () => onDownloadUrl(file.downloadUrl),
+              )
+          else if (musicResults.isNotEmpty)
+            for (final result in musicResults.take(20))
+              _ResultRow(
+                icon: Icons.album_outlined,
+                title: result.title,
+                subtitle: [result.creator, result.year]
+                    .whereType<String>()
+                    .join(' · '),
+                actionLabel: '查看文件',
+                onTap: () => onOpenMusic(result),
+              )
+          else
+            for (final resource in sniffedResources.take(30))
+              _ResultRow(
+                icon: resource.kind == 'audio'
+                    ? Icons.audio_file_outlined
+                    : resource.kind == 'image'
+                        ? Icons.image_outlined
+                        : Icons.movie_outlined,
+                title: resource.url,
+                subtitle:
+                    '${resource.kind} · ${resource.extension ?? '未知格式'} · ${resource.source}',
+                actionLabel: '处理',
+                onTap: () => onDownloadUrl(resource.url),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ResultRow extends StatelessWidget {
+  const _ResultRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.actionLabel,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final String actionLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: context.palette.textMuted, fontSize: 12)),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              TextButton(onPressed: onTap, child: Text(actionLabel)),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: context.palette.border),
+      ],
+    );
+  }
+}
+
+String _humanBytes(int bytes) {
+  var value = bytes.toDouble();
+  for (final unit in const ['B', 'KB', 'MB', 'GB']) {
+    if (value < 1024 || unit == 'GB') {
+      return '${value.toStringAsFixed(unit == 'B' ? 0 : 1)} $unit';
+    }
+    value /= 1024;
+  }
+  return '$bytes B';
+}

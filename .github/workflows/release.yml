@@ -1,0 +1,152 @@
+name: Publish langbai release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without v prefix
+        required: true
+        default: 1.0.0
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+      - shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Build langbai Windows Setup
+        shell: pwsh
+        run: |
+          $version = if ("${{ inputs.version }}") { "${{ inputs.version }}" } else { $env:GITHUB_REF_NAME.TrimStart("v") }
+          & ./scripts/build_windows_setup.ps1 -Version $version -UpdateManifestUrl $env:UPDATE_MANIFEST_URL
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/langbai-resolver-Setup.exe
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+      - name: Build langbai Android APK
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          flutter pub get
+          flutter test
+          flutter build apk --release --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          cp build/app/outputs/flutter-apk/app-release.apk build/langbai-resolver-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: client/build/langbai-resolver-Android.apk
+          if-no-files-found: error
+
+  ios:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+      - name: Build unsigned langbai IPA
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          flutter pub get
+          flutter build ios --release --no-codesign --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
+          cd build/ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload langbai-resolver-iOS.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ios
+          path: client/build/ipa/langbai-resolver-iOS.ipa
+          if-no-files-found: error
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+      - name: Build langbai Web package
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          flutter pub get
+          flutter build web --release --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          cd build/web
+          zip -r ../langbai-resolver-Web.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-web
+          path: client/build/langbai-resolver-Web.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, android, ios, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create update manifest
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --assets release-assets --output release-assets/update-manifest.json
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          TAG="$GITHUB_REF_NAME"
+          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="v$VERSION"
+          fi
+          gh release create "$TAG" release-assets/* --target "$GITHUB_SHA" --title "langbai解析 $VERSION" --generate-notes
