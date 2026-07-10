@@ -2,7 +2,7 @@
 
 `langbai解析` 是面向 Windows、Android、iOS 和 Web 的公开媒体解析、转换与下载工作台。复制链接后进入应用会自动路由到对应解析页面；界面同时提供深色与浅色模式。
 
-![langbai解析深色界面](design-reference/implementation-dark.png)
+![langbai解析深色界面](design-reference/implementation-dark-updater.png)
 
 ## 主要能力
 
