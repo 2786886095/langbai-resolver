@@ -553,7 +553,7 @@ class _ParserPageState extends State<ParserPage> {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: const Color(0xFFFF6699).withOpacity(.12),
+              color: const Color.fromRGBO(255, 102, 153, .12),
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Icon(Icons.tv_rounded, color: Color(0xFFFF6699)),
