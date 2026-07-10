@@ -11,6 +11,7 @@
 - 本地视频提取音频、视频压缩、图片压缩和媒体信息读取。
 - 基于 Internet Archive 的开放授权/公共领域音乐搜索及无损音频文件筛选。
 - Windows 软件内下载 Setup、SHA-256 校验并启动静默更新；Android、iOS、Web 启动时统一检测更新。
+- Windows Setup 内置本地解析服务、FFmpeg 和 aria2，启动客户端时会自动运行并显示真实连接状态。
 - 自适应桌面侧边栏和移动端底部导航，支持深色、浅色、跟随系统和桌面端默认保存路径。
 
 > 网站接口、登录策略和风控会变化，因此无法承诺“所有网站永久适配”。解析器可独立升级以降低维护成本。项目只处理公开、无 DRM 且用户有权保存的内容，不绕过付费、私密、地区限制或访问控制。BT/磁力功能也只用于合法内容。
@@ -51,7 +52,7 @@ Windows Setup（需要 Flutter、Visual Studio C++ 桌面工作负载和 Inno Se
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.0.1" `
+  -Version "1.0.2" `
   -UpdateManifestUrl "https://github.com/你的账号/langbai-resolver/releases/latest/download/update-manifest.json"
 ```
 
@@ -75,7 +76,7 @@ UPDATE_MANIFEST_URL="https://github.com/你的账号/langbai-resolver/releases/l
 
 ## GitHub Release 与自动更新
 
-推送 `v1.0.1` 形式的标签，`release.yml` 会自动生成并发布：
+推送 `v1.0.2` 形式的标签，`release.yml` 会自动生成并发布：
 
 - `langbai-resolver-Setup.exe`
 - `langbai-resolver-Android.apk`

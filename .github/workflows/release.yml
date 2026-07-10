@@ -6,7 +6,7 @@ on:
       version:
         description: Release version without v prefix
         required: true
-        default: 1.0.1
+        default: 1.0.2
   push:
     tags:
       - "v*"
@@ -22,13 +22,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.44.0"
           channel: stable
           cache: true
       - shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: choco install innosetup ffmpeg aria2 -y --no-progress
       - name: Build langbai Windows Setup
         shell: pwsh
         run: |
@@ -142,7 +145,7 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "修复 Windows 标题乱码、全端图标与字体；新增保存路径、自动解析和多线路并发下载。" --assets release-assets --output release-assets/update-manifest.json
+          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "Windows 内置并自动启动解析服务；修复工具输入串值、网络状态显示和图标缓存。" --assets release-assets --output release-assets/update-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

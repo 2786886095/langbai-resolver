@@ -33,7 +33,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.1",
+    version="1.0.2",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(

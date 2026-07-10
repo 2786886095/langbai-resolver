@@ -7,11 +7,12 @@ on:
     paths:
       - "client/**"
       - "installer/**"
+      - "backend/**"
       - "scripts/build_windows_setup.ps1"
       - ".github/workflows/build-clients.yml"
 
 env:
-  APP_VERSION: "1.0.1"
+  APP_VERSION: "1.0.2"
   UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
 
 jobs:
@@ -50,13 +51,16 @@ jobs:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.44.0"
           channel: stable
           cache: true
       - shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: choco install innosetup ffmpeg aria2 -y --no-progress
       - shell: pwsh
         run: >-
           & ../scripts/build_windows_setup.ps1

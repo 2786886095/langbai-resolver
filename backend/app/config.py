@@ -22,8 +22,8 @@ class Settings:
     cookie_file: Path | None
     ffmpeg_location: Path | None
     allow_fake_ip_dns: bool
-    update_version: str = "1.0.1"
-    update_notes: str = "修复图标、标题与字体，新增自动解析和多线路下载"
+    update_version: str = "1.0.2"
+    update_notes: str = "Windows 内置解析服务，修复工具输入串值和图标缓存"
     update_windows_url: str = ""
     update_windows_sha256: str = ""
     update_android_url: str = ""
@@ -59,9 +59,9 @@ class Settings:
                 "MEDIA_HARBOR_ALLOW_FAKE_IP_DNS", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.1").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.2").strip(),
             update_notes=os.getenv(
-                "LANGBAI_UPDATE_NOTES", "修复图标、标题与字体，新增自动解析和多线路下载"
+                "LANGBAI_UPDATE_NOTES", "Windows 内置解析服务，修复工具输入串值和图标缓存"
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(

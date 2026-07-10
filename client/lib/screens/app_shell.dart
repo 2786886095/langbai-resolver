@@ -12,6 +12,7 @@ import '../pages/dashboard_page.dart';
 import '../pages/downloads_page.dart';
 import '../pages/parser_page.dart';
 import '../pages/tools_page.dart';
+import '../services/api_client.dart';
 import '../services/link_detector.dart';
 import '../services/update_installer.dart';
 import '../services/update_models.dart';
@@ -19,6 +20,10 @@ import '../services/update_service.dart';
 import '../theme/langbai_theme.dart';
 
 const _demoClipboardLink = String.fromEnvironment('DEMO_LINK');
+const _defaultShellApiUrl = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'http://127.0.0.1:8787',
+);
 
 class AppShell extends StatefulWidget {
   const AppShell({
@@ -45,17 +50,25 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   bool _automaticUpdateChecksEnabled = true;
   bool _checkingForUpdate = false;
   String? _downloadDirectory;
+  bool? _serviceHealthy;
+  Timer? _healthTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _restorePreferences();
+    unawaited(_checkServiceHealth());
+    _healthTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => unawaited(_checkServiceHealth()),
+    );
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _healthTimer?.cancel();
     super.dispose();
   }
 
@@ -94,6 +107,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       _parseDetected(detected);
     } on Object {
       // Clipboard access may be denied by the platform; manual paste remains available.
+    }
+  }
+
+  Future<void> _checkServiceHealth() async {
+    final preferences = await SharedPreferences.getInstance();
+    final baseUrl =
+        preferences.getString('api_base_url')?.trim() ?? _defaultShellApiUrl;
+    final api = ApiClient(baseUrl);
+    final healthy = await api.isHealthy();
+    api.close();
+    if (mounted && healthy != _serviceHealthy) {
+      setState(() => _serviceHealthy = healthy);
     }
   }
 
@@ -505,6 +530,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   width: 214,
                   child: _DesktopNavigation(
                     selectedIndex: _selectedIndex,
+                    serviceHealthy: _serviceHealthy,
                     onSelected: (value) =>
                         setState(() => _selectedIndex = value),
                     onSettings: _showSettings,
@@ -582,12 +608,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 class _DesktopNavigation extends StatelessWidget {
   const _DesktopNavigation({
     required this.selectedIndex,
+    required this.serviceHealthy,
     required this.onSelected,
     required this.onSettings,
     required this.onAbout,
   });
 
   final int selectedIndex;
+  final bool? serviceHealthy;
   final ValueChanged<int> onSelected;
   final VoidCallback onSettings;
   final VoidCallback onAbout;
@@ -653,12 +681,23 @@ class _DesktopNavigation extends StatelessWidget {
                       height: 8,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: context.palette.success,
+                        color: serviceHealthy == null
+                            ? context.palette.textMuted
+                            : serviceHealthy!
+                                ? context.palette.success
+                                : Theme.of(context).colorScheme.error,
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text('服务运行正常', style: TextStyle(fontSize: 12)),
+                    Expanded(
+                      child: Text(
+                        serviceHealthy == null
+                            ? '正在连接解析服务'
+                            : serviceHealthy!
+                                ? '解析服务运行正常'
+                                : '解析服务未连接',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
                   ],
                 ),

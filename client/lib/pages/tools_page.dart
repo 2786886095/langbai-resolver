@@ -27,6 +27,7 @@ class ToolsPage extends StatefulWidget {
 class _ToolsPageState extends State<ToolsPage> {
   String? _selectedTool;
   XFile? _selectedFile;
+  final Map<String, String> _toolInputs = {};
   late final TextEditingController _inputController;
   late ApiClient _api;
   bool _busy = false;
@@ -91,8 +92,32 @@ class _ToolsPageState extends State<ToolsPage> {
         : value.startsWith('magnet:') || value.endsWith('.torrent')
             ? 'transfer'
             : 'direct';
-    _selectedTool = tool;
-    if (tool == 'transfer' || tool == 'direct') _inputController.text = value;
+    _selectTool(
+      tool,
+      input: tool == 'transfer' || tool == 'direct' ? value : null,
+      notify: false,
+    );
+  }
+
+  void _selectTool(String tool, {String? input, bool notify = true}) {
+    final current = _selectedTool;
+    if (current != null) _toolInputs[current] = _inputController.text;
+    if (input != null) _toolInputs[tool] = input;
+
+    void apply() {
+      _selectedTool = tool;
+      _inputController.text = _toolInputs[tool] ?? '';
+      _inputController.selection = TextSelection.collapsed(
+        offset: _inputController.text.length,
+      );
+      _error = null;
+    }
+
+    if (notify && mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
   }
 
   @override
@@ -149,13 +174,7 @@ class _ToolsPageState extends State<ToolsPage> {
                             child: _ToolCard(
                               tool: tool,
                               selected: _selectedTool == tool.id,
-                              onTap: () {
-                                if (tool.id == 'parser') {
-                                  setState(() => _selectedTool = tool.id);
-                                } else {
-                                  setState(() => _selectedTool = tool.id);
-                                }
-                              },
+                              onTap: () => _selectTool(tool.id),
                             ),
                           ),
                       ],

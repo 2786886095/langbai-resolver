@@ -4,7 +4,7 @@ project(media_harbor LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "media_harbor")
+set(BINARY_NAME "langbai_resolver")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

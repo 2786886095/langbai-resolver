@@ -24,6 +24,17 @@ class ApiClient {
 
   Uri _uri(String path) => Uri.parse('$baseUrl$path');
 
+  Future<bool> isHealthy() async {
+    try {
+      final response = await _client
+          .get(_uri('/api/v1/health'))
+          .timeout(const Duration(seconds: 3));
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } on Object {
+      return false;
+    }
+  }
+
   Future<MediaInfo> resolve(String url) async {
     final response = await _client
         .post(

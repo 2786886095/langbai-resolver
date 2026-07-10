@@ -69,7 +69,7 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 #if defined(FLUTTER_VERSION)
 #define VERSION_AS_STRING FLUTTER_VERSION
 #else
-#define VERSION_AS_STRING "1.0.1"
+#define VERSION_AS_STRING "1.0.2"
 #endif
 
 VS_VERSION_INFO VERSIONINFO
@@ -92,9 +92,9 @@ BEGIN
             VALUE "CompanyName", "com.langbai.mediaharbor" "\0"
             VALUE "FileDescription", "langbai解析" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "media_harbor" "\0"
+            VALUE "InternalName", "langbai_resolver" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.langbai.mediaharbor. All rights reserved." "\0"
-            VALUE "OriginalFilename", "media_harbor.exe" "\0"
+            VALUE "OriginalFilename", "langbai_resolver.exe" "\0"
             VALUE "ProductName", "langbai解析" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
