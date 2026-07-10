@@ -72,6 +72,9 @@ HANDLE StartBundledBackend() {
   ::CreateDirectoryW(data_directory.c_str(), nullptr);
   ::SetEnvironmentVariableW(L"MEDIA_HARBOR_HOST", L"127.0.0.1");
   ::SetEnvironmentVariableW(L"MEDIA_HARBOR_PORT", L"8787");
+  // Clash and similar VPN clients can map public domains into 198.18.0.0/15.
+  // The backend still rejects localhost and real private network ranges.
+  ::SetEnvironmentVariableW(L"MEDIA_HARBOR_ALLOW_FAKE_IP_DNS", L"true");
   ::SetEnvironmentVariableW(L"MEDIA_HARBOR_DOWNLOAD_DIR",
                             data_directory.c_str());
   ::SetEnvironmentVariableW(L"MEDIA_HARBOR_FFMPEG_LOCATION",

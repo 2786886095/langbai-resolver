@@ -13,6 +13,7 @@ class AssetKind(str, Enum):
 
 class ResolveRequest(BaseModel):
     url: str = Field(min_length=8, max_length=4096)
+    use_browser_cookies: bool = False
 
 
 class MediaOption(BaseModel):
@@ -104,6 +105,14 @@ class MusicSearchResult(BaseModel):
     creator: str | None = None
     year: str | None = None
     item_url: str
+    source: str = "internet_archive"
+    source_label: str = "Internet Archive"
+    can_download: bool = False
+    preview_url: str | None = None
+    artwork_url: str | None = None
+    album: str | None = None
+    duration_seconds: int | None = None
+    license: str | None = None
 
 
 class MusicFile(BaseModel):

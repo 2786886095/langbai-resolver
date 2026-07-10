@@ -135,8 +135,16 @@ class MusicSearchResult {
     required this.identifier,
     required this.title,
     required this.itemUrl,
+    required this.source,
+    required this.sourceLabel,
+    required this.canDownload,
     this.creator,
     this.year,
+    this.previewUrl,
+    this.artworkUrl,
+    this.album,
+    this.durationSeconds,
+    this.license,
   });
 
   factory MusicSearchResult.fromJson(Map<String, dynamic> json) {
@@ -144,16 +152,32 @@ class MusicSearchResult {
       identifier: json['identifier'] as String,
       title: json['title'] as String,
       itemUrl: json['item_url'] as String,
+      source: json['source']?.toString() ?? 'internet_archive',
+      sourceLabel: json['source_label']?.toString() ?? 'Internet Archive',
+      canDownload: json['can_download'] == true,
       creator: json['creator'] as String?,
       year: json['year'] as String?,
+      previewUrl: json['preview_url'] as String?,
+      artworkUrl: json['artwork_url'] as String?,
+      album: json['album'] as String?,
+      durationSeconds: (json['duration_seconds'] as num?)?.toInt(),
+      license: json['license'] as String?,
     );
   }
 
   final String identifier;
   final String title;
   final String itemUrl;
+  final String source;
+  final String sourceLabel;
+  final bool canDownload;
   final String? creator;
   final String? year;
+  final String? previewUrl;
+  final String? artworkUrl;
+  final String? album;
+  final int? durationSeconds;
+  final String? license;
 }
 
 class MusicFile {

@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/media_models.dart';
 import '../services/api_client.dart';
 import '../services/download_saver.dart';
+import '../services/local_media_service.dart';
+import '../services/open_music_service.dart';
 import '../theme/langbai_theme.dart';
 
 const _defaultToolsApiUrl = String.fromEnvironment(
@@ -30,6 +33,7 @@ class _ToolsPageState extends State<ToolsPage> {
   final Map<String, String> _toolInputs = {};
   late final TextEditingController _inputController;
   late ApiClient _api;
+  final _openMusic = OpenMusicService();
   bool _busy = false;
   String? _error;
   DownloadJob? _job;
@@ -39,6 +43,8 @@ class _ToolsPageState extends State<ToolsPage> {
   List<MusicSearchResult> _musicResults = const [];
   List<MusicFile> _musicFiles = const [];
   List<SniffedResource> _sniffedResources = const [];
+
+  bool get _usesDirectMusic => LocalMediaService.isSupported;
 
   static const _tools = [
     _ToolDefinition('parser', '视频与图片解析', '解析网页媒体、分辨率、音频和封面',
@@ -50,7 +56,7 @@ class _ToolsPageState extends State<ToolsPage> {
     _ToolDefinition(
         'compress', '媒体压缩', '视频和图片按目标大小缩小体积', Icons.compress_rounded),
     _ToolDefinition(
-        'music', '无损音乐搜索', '搜索合法开放来源的 FLAC / WAV', Icons.headphones_rounded),
+        'music', '多源音乐搜索', '聚合开放下载、试听与全球曲库元数据', Icons.headphones_rounded),
     _ToolDefinition('direct', '多线路直链下载', '单链接八段并发，多镜像交叉下载', Icons.link_rounded),
     _ToolDefinition(
         'transfer', '磁力与种子', 'BT / Magnet 任务与文件选择', Icons.hub_outlined),
@@ -123,6 +129,7 @@ class _ToolsPageState extends State<ToolsPage> {
   @override
   void dispose() {
     _api.close();
+    _openMusic.close();
     _inputController.dispose();
     super.dispose();
   }
@@ -213,7 +220,7 @@ class _ToolsPageState extends State<ToolsPage> {
                       musicResults: _musicResults,
                       musicFiles: _musicFiles,
                       sniffedResources: _sniffedResources,
-                      onOpenMusic: _loadMusicFiles,
+                      onOpenMusic: _openMusicResult,
                       onDownloadUrl: widget.onOpenParser,
                     ),
                   ],
@@ -254,7 +261,9 @@ class _ToolsPageState extends State<ToolsPage> {
         if (mounted) setState(() => _sniffedResources = result.resources);
       } else if (tool == 'music') {
         if (input.isEmpty) throw const ApiException('请输入歌曲、歌手或专辑');
-        final results = await _api.searchMusic(input);
+        final results = _usesDirectMusic
+            ? await _openMusic.search(input)
+            : await _api.searchMusic(input);
         if (mounted) setState(() => _musicResults = results);
       } else if (tool == 'direct') {
         if (input.isEmpty) throw const ApiException('请输入至少一条公开直链');
@@ -310,12 +319,27 @@ class _ToolsPageState extends State<ToolsPage> {
       _error = null;
     });
     try {
-      final files = await _api.musicFiles(result.identifier);
+      final files = _usesDirectMusic
+          ? await _openMusic.files(result.identifier)
+          : await _api.musicFiles(result.identifier);
       if (mounted) setState(() => _musicFiles = files);
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _openMusicResult(MusicSearchResult result) async {
+    if (result.canDownload) {
+      await _loadMusicFiles(result);
+      return;
+    }
+    final target = result.previewUrl ?? result.itemUrl;
+    final uri = Uri.tryParse(target);
+    if (uri == null ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (mounted) setState(() => _error = '无法打开 ${result.sourceLabel} 来源页面');
     }
   }
 
@@ -528,7 +552,8 @@ class _ToolWorkspace extends StatelessWidget {
             ],
             if (tool.id == 'music') ...[
               const SizedBox(height: 10),
-              Text('仅搜索 Internet Archive 等合法开放来源；不绕过付费或版权限制。',
+              Text(
+                  '聚合 Apple Music、MusicBrainz、Audius、Internet Archive、Wikimedia Commons 和可选 Jamendo；仅对来源明确授权的文件提供下载。',
                   style: TextStyle(
                       color: context.palette.textMuted, fontSize: 12)),
             ],
@@ -646,9 +671,9 @@ class _ToolResults extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Text(
               musicFiles.isNotEmpty
-                  ? '可用音频文件'
+                  ? '可用音频文件 · ${musicFiles.length} 个'
                   : musicResults.isNotEmpty
-                      ? '开放音乐搜索结果'
+                      ? '多源音乐搜索结果 · ${musicResults.length} 条'
                       : '嗅探到的媒体资源',
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
@@ -665,14 +690,25 @@ class _ToolResults extends StatelessWidget {
                 onTap: () => onDownloadUrl(file.downloadUrl),
               )
           else if (musicResults.isNotEmpty)
-            for (final result in musicResults.take(20))
+            for (final result in musicResults.take(60))
               _ResultRow(
                 icon: Icons.album_outlined,
                 title: result.title,
-                subtitle: [result.creator, result.year]
+                subtitle: [
+                  result.sourceLabel,
+                  result.creator,
+                  result.year,
+                  result.album,
+                  result.license,
+                ]
                     .whereType<String>()
+                    .where((value) => value.isNotEmpty)
                     .join(' · '),
-                actionLabel: '查看文件',
+                actionLabel: result.canDownload
+                    ? '查看文件'
+                    : result.previewUrl != null
+                        ? '试听'
+                        : '打开来源',
                 onTap: () => onOpenMusic(result),
               )
           else

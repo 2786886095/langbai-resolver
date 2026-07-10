@@ -22,8 +22,10 @@ class Settings:
     cookie_file: Path | None
     ffmpeg_location: Path | None
     allow_fake_ip_dns: bool
-    update_version: str = "1.0.2"
-    update_notes: str = "Windows 内置解析服务，修复工具输入串值和图标缓存"
+    jamendo_client_id: str | None = None
+    audius_api_key: str | None = None
+    update_version: str = "1.0.3"
+    update_notes: str = "Android 与 iOS 本机解析，多源音乐搜索，Windows 浏览器 Cookie 与 Fake-IP 兼容"
     update_windows_url: str = ""
     update_windows_sha256: str = ""
     update_android_url: str = ""
@@ -59,9 +61,12 @@ class Settings:
                 "MEDIA_HARBOR_ALLOW_FAKE_IP_DNS", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.2").strip(),
+            jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
+            audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.0.3").strip(),
             update_notes=os.getenv(
-                "LANGBAI_UPDATE_NOTES", "Windows 内置解析服务，修复工具输入串值和图标缓存"
+                "LANGBAI_UPDATE_NOTES",
+                "Android 与 iOS 本机解析，多源音乐搜索，Windows 浏览器 Cookie 与 Fake-IP 兼容",
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(

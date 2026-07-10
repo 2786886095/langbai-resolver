@@ -35,12 +35,18 @@ class ApiClient {
     }
   }
 
-  Future<MediaInfo> resolve(String url) async {
+  Future<MediaInfo> resolve(
+    String url, {
+    bool useBrowserCookies = false,
+  }) async {
     final response = await _client
         .post(
           _uri('/api/v1/resolve'),
           headers: const {'content-type': 'application/json'},
-          body: jsonEncode({'url': url}),
+          body: jsonEncode({
+            'url': url,
+            'use_browser_cookies': useBrowserCookies,
+          }),
         )
         .timeout(const Duration(seconds: 75));
     return MediaInfo.fromJson(_jsonOrThrow(response));

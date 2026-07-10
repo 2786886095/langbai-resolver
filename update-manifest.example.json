@@ -1,6 +1,6 @@
 {
-  "version": "1.0.2",
-  "notes": "Windows 内置并自动启动解析服务；修复工具输入串值、网络状态显示和图标缓存。",
+  "version": "1.0.3",
+  "notes": "Android 与 iOS 本机解析，多源音乐搜索，Windows 浏览器 Cookie 与 Fake-IP 兼容。",
   "published_at": "2026-07-10T00:00:00Z",
   "platforms": {
     "windows": {

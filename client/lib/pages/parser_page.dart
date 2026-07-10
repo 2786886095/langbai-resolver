@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/media_models.dart';
 import '../services/api_client.dart';
 import '../services/download_saver.dart';
+import '../services/local_media_service.dart';
 import '../theme/langbai_theme.dart';
 
 const _defaultApiUrl = String.fromEnvironment(
@@ -43,7 +45,12 @@ class _ParserPageState extends State<ParserPage> {
   bool _resolving = false;
   bool _saving = false;
   double _saveProgress = 0;
+  bool _useBrowserCookies = false;
   String? _error;
+
+  bool get _usesLocalParser => LocalMediaService.isSupported;
+  bool get _canUseBrowserCookies =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   @override
   void initState() {
@@ -62,12 +69,17 @@ class _ParserPageState extends State<ParserPage> {
   }
 
   Future<void> _restoreApiUrl() async {
+    if (_usesLocalParser) return;
     try {
       final preferences = await SharedPreferences.getInstance();
       final saved = preferences.getString('api_base_url')?.trim();
-      if (!mounted || saved == null || saved.isEmpty || saved == _api.baseUrl) {
-        return;
+      if (!mounted) return;
+      final useBrowserCookies =
+          preferences.getBool('use_browser_cookies') ?? false;
+      if (useBrowserCookies != _useBrowserCookies) {
+        setState(() => _useBrowserCookies = useBrowserCookies);
       }
+      if (saved == null || saved.isEmpty || saved == _api.baseUrl) return;
       _api.close();
       setState(() {
         _api = ApiClient(saved);
@@ -107,7 +119,12 @@ class _ParserPageState extends State<ParserPage> {
       _job = null;
     });
     try {
-      final media = await _api.resolve(url);
+      final media = _usesLocalParser
+          ? await LocalMediaService.instance.resolve(url)
+          : await _api.resolve(
+              url,
+              useBrowserCookies: _useBrowserCookies,
+            );
       if (!mounted) return;
       final availableKinds = AssetKind.values
           .where((kind) => media.options.any((option) => option.kind == kind))
@@ -121,6 +138,8 @@ class _ParserPageState extends State<ParserPage> {
         _selected = media.options.firstWhere((option) => option.kind == kind);
       });
     } on ApiException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on LocalMediaException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on TimeoutException {
       if (mounted) setState(() => _error = '解析超时，请检查解析服务或稍后重试');
@@ -141,6 +160,10 @@ class _ParserPageState extends State<ParserPage> {
       _saveProgress = 0;
     });
     try {
+      if (_usesLocalParser) {
+        await _startLocalDownload(media, option);
+        return;
+      }
       var job = await _api.createJob(media.mediaId, option.id);
       if (mounted) {
         setState(() => _job = job);
@@ -169,11 +192,78 @@ class _ParserPageState extends State<ParserPage> {
       );
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
+    } on LocalMediaException catch (error) {
+      if (mounted) setState(() => _error = error.message);
     } on Object catch (error) {
       if (mounted) setState(() => _error = '下载失败：$error');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<void> _startLocalDownload(
+    MediaInfo media,
+    MediaOption option,
+  ) async {
+    final jobId =
+        'local-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+    var job = DownloadJob(
+      id: jobId,
+      state: JobState.running,
+      progress: 0,
+    );
+    if (mounted) {
+      setState(() => _job = job);
+      widget.onJobChanged?.call(job, media, option);
+    }
+    late final LocalDownloadResult result;
+    try {
+      result = await LocalMediaService.instance.download(
+        mediaId: media.mediaId,
+        optionId: option.id,
+        onProgress: (progress) {
+          if (!mounted) return;
+          job = DownloadJob(
+            id: jobId,
+            state: JobState.running,
+            progress: progress,
+            filename: job.filename,
+          );
+          setState(() {
+            _job = job;
+            _saveProgress = progress;
+          });
+          widget.onJobChanged?.call(job, media, option);
+        },
+      );
+    } on Object catch (error) {
+      if (mounted) {
+        job = DownloadJob(
+          id: jobId,
+          state: JobState.failed,
+          progress: job.progress,
+          error: error.toString(),
+        );
+        setState(() => _job = job);
+        widget.onJobChanged?.call(job, media, option);
+      }
+      rethrow;
+    }
+    if (!mounted) return;
+    job = DownloadJob(
+      id: jobId,
+      state: JobState.completed,
+      progress: 1,
+      filename: result.filename,
+    );
+    setState(() {
+      _job = job;
+      _saveProgress = 1;
+    });
+    widget.onJobChanged?.call(job, media, option);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result.message)),
+    );
   }
 
   Future<void> _changeApiUrl(String value) async {
@@ -193,6 +283,12 @@ class _ParserPageState extends State<ParserPage> {
     });
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString('api_base_url', normalized);
+  }
+
+  Future<void> _setUseBrowserCookies(bool value) async {
+    setState(() => _useBrowserCookies = value);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool('use_browser_cookies', value);
   }
 
   Future<void> _showSettings() async {
@@ -268,11 +364,18 @@ class _ParserPageState extends State<ParserPage> {
                           ],
                         ),
                       ),
-                      IconButton(
-                        tooltip: '解析服务设置',
-                        onPressed: _saving || _resolving ? null : _showSettings,
-                        icon: const Icon(Icons.tune_rounded),
-                      ),
+                      if (_usesLocalParser)
+                        const Chip(
+                          avatar: Icon(Icons.smartphone_rounded, size: 17),
+                          label: Text('本机解析'),
+                        )
+                      else
+                        IconButton(
+                          tooltip: '解析服务设置',
+                          onPressed:
+                              _saving || _resolving ? null : _showSettings,
+                          icon: const Icon(Icons.tune_rounded),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 24),
@@ -375,6 +478,22 @@ class _ParserPageState extends State<ParserPage> {
                 );
               },
             ),
+            if (_canUseBrowserCookies) ...[
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                value: _useBrowserCookies,
+                onChanged: _resolving || _saving
+                    ? null
+                    : (value) => _setUseBrowserCookies(value ?? false),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                dense: true,
+                title: const Text('使用本机浏览器登录状态'),
+                subtitle: const Text(
+                  '仅在解析需要登录或 Cookie 的平台时启用；将依次尝试 Edge、Chrome 和 Firefox。',
+                ),
+              ),
+            ],
             const SizedBox(height: 14),
             Text(
               '仅用于你有权保存的公开、无 DRM 内容。平台规则变化时需更新服务端解析器。',
@@ -477,7 +596,11 @@ class _ParserPageState extends State<ParserPage> {
             ),
             if (_job != null || _saving) ...[
               const SizedBox(height: 8),
-              _ProgressPanel(job: _job, saveProgress: _saveProgress),
+              _ProgressPanel(
+                job: _job,
+                saveProgress: _saveProgress,
+                local: _usesLocalParser,
+              ),
             ],
             const SizedBox(height: 14),
             SizedBox(
@@ -732,10 +855,15 @@ class _OptionTile extends StatelessWidget {
 }
 
 class _ProgressPanel extends StatelessWidget {
-  const _ProgressPanel({required this.job, required this.saveProgress});
+  const _ProgressPanel({
+    required this.job,
+    required this.saveProgress,
+    required this.local,
+  });
 
   final DownloadJob? job;
   final double saveProgress;
+  final bool local;
 
   @override
   Widget build(BuildContext context) {
@@ -745,8 +873,8 @@ class _ProgressPanel extends StatelessWidget {
     final label = current == null
         ? '正在创建任务…'
         : switch (current.state) {
-            JobState.queued => '等待服务器处理…',
-            JobState.running => '服务器正在下载并处理…',
+            JobState.queued => local ? '等待本机处理…' : '等待服务器处理…',
+            JobState.running => local ? '本机正在下载并处理…' : '服务器正在下载并处理…',
             JobState.completed => saveProgress >= 1 ? '保存完成' : '正在保存到设备…',
             JobState.failed => '任务失败',
           };

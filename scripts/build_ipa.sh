@@ -3,7 +3,9 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API_BASE_URL="${API_BASE_URL:-https://media-api.example.com}"
-APP_VERSION="${APP_VERSION:-1.0.2}"
+APP_VERSION="${APP_VERSION:-1.0.3}"
+
+"$(cd "$(dirname "$0")" && pwd)/prepare_ios_local_parser.sh"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-}"
 
 cd "$PROJECT_ROOT/client"

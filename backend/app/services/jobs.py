@@ -674,6 +674,8 @@ class JobManager:
             ]
         if self._settings.cookie_file and self._settings.cookie_file.is_file():
             options["cookiefile"] = str(self._settings.cookie_file)
+        elif spec.cookie_browser:
+            options["cookiesfrombrowser"] = (spec.cookie_browser,)
         if self._settings.ffmpeg_location:
             options["ffmpeg_location"] = str(self._settings.ffmpeg_location)
 

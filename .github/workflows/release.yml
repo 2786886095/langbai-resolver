@@ -6,7 +6,7 @@ on:
       version:
         description: Release version without v prefix
         required: true
-        default: 1.0.2
+        default: 1.0.3
   push:
     tags:
       - "v*"
@@ -65,12 +65,15 @@ jobs:
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           flutter pub get
           flutter test
-          flutter build apk --release --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
-          cp build/app/outputs/flutter-apk/app-release.apk build/langbai-resolver-Android.apk
+          flutter build apk --release --split-per-abi --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk build/langbai-resolver-Android.apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk build/langbai-resolver-Android-arm64.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk build/langbai-resolver-Android-armv7.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk build/langbai-resolver-Android-x86_64.apk
       - uses: actions/upload-artifact@v4
         with:
           name: release-android
-          path: client/build/langbai-resolver-Android.apk
+          path: client/build/langbai-resolver-Android*.apk
           if-no-files-found: error
 
   ios:
@@ -85,6 +88,8 @@ jobs:
           flutter-version: "3.44.0"
           channel: stable
           cache: true
+      - name: Prepare embedded iOS Python and yt-dlp
+        run: bash ../scripts/prepare_ios_local_parser.sh
       - name: Build unsigned langbai IPA
         run: |
           VERSION="${{ inputs.version }}"
@@ -145,7 +150,7 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "Windows 内置并自动启动解析服务；修复工具输入串值、网络状态显示和图标缓存。" --assets release-assets --output release-assets/update-manifest.json
+          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "Android 与 iOS 本机解析；多源音乐聚合；Windows 浏览器 Cookie 与 Clash Fake-IP 兼容。" --assets release-assets --output release-assets/update-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

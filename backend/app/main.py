@@ -33,7 +33,7 @@ from app.services.sniffer import SnifferService
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.0.2",
+    version="1.0.3",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
 )
 app.add_middleware(
@@ -47,7 +47,10 @@ app.add_middleware(
 resolver = ResolverService(settings)
 jobs = JobManager(settings, resolver)
 sniffer = SnifferService(settings)
-music = OpenMusicService()
+music = OpenMusicService(
+    jamendo_client_id=settings.jamendo_client_id,
+    audius_api_key=settings.audius_api_key,
+)
 
 
 @app.get("/api/v1/health", response_model=HealthResponse)
@@ -85,7 +88,10 @@ def update_manifest() -> UpdateManifest:
 @app.post("/api/v1/resolve", response_model=MediaInfo)
 async def resolve_media(request: ResolveRequest) -> MediaInfo:
     try:
-        return await resolver.resolve(request.url)
+        return await resolver.resolve(
+            request.url,
+            use_browser_cookies=request.use_browser_cookies,
+        )
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except yt_dlp.utils.DownloadError as exc:
