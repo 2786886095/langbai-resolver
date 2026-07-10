@@ -522,6 +522,9 @@ class _ToolWorkspace extends StatelessWidget {
             if (tool.id == 'audio') ...[
               const SizedBox(height: 14),
               DropdownButtonFormField<String>(
+                // Keep compatibility with the Flutter version used by the
+                // desktop toolchain. Newer SDKs call this initialValue.
+                // ignore: deprecated_member_use
                 value: audioFormat,
                 decoration: const InputDecoration(labelText: '输出格式'),
                 items: const [

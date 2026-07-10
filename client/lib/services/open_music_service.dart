@@ -270,7 +270,9 @@ class OpenMusicService {
       final extension =
           name.contains('.') ? name.split('.').last.toLowerCase() : '';
       if (!const {'flac', 'wav', 'mp3', 'm4a', 'ogg', 'opus'}
-          .contains(extension)) continue;
+          .contains(extension)) {
+        continue;
+      }
       results.add(MusicFile(
         name: name,
         format: item['format']?.toString() ?? extension.toUpperCase(),
