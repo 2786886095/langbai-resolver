@@ -255,7 +255,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\ncd \"$PROJECT_DIR\"\nsource Python.xcframework/build/utils.sh\ninstall_python Python.xcframework Runner/app Runner/app_packages\n";
+			shellScript = "set -e\ncd \"$PROJECT_DIR\"\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" != \"YES\" ]; then\n  export EXPANDED_CODE_SIGN_IDENTITY=\"-\"\n  export EXPANDED_CODE_SIGN_IDENTITY_NAME=\"ad hoc\"\nfi\nsource Python.xcframework/build/utils.sh\ninstall_python Python.xcframework Runner/app Runner/app_packages\n";
 			showEnvVarsInLog = 0;
 		};
 		3B06AD1E1E4923F5004D2608 /* Thin Binary */ = {
