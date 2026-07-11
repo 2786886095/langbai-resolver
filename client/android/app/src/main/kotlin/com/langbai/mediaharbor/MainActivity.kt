@@ -1,18 +1,23 @@
 package com.langbai.mediaharbor
 
 import android.Manifest
+import android.app.Activity
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.yausername.aria2c.Aria2c
+import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -46,12 +51,41 @@ class MainActivity : FlutterActivity() {
     private val activeConnections = ConcurrentHashMap<String, HttpURLConnection>()
     private val cancelledProcesses = ConcurrentHashMap.newKeySet<String>()
     private val progressState = ConcurrentHashMap<String, ProgressState>()
+    private val activeConversionTasks = ConcurrentHashMap.newKeySet<String>()
+    private val cancelledConversionTasks = ConcurrentHashMap.newKeySet<String>()
     private val pendingStoragePermissions = mutableListOf<PendingStoragePermission>()
     private val engineLock = ReentrantReadWriteLock()
+    private val formatConverter by lazy { NativeFormatConverter(applicationContext) }
+    private val updateDownloader by lazy { AppUpdateDownloader(applicationContext) }
     private lateinit var channel: MethodChannel
+    private var pendingDirectoryPicker: MethodChannel.Result? = null
+    private var pendingInstallApk: File? = null
+    private var pendingInstallProcessId: String? = null
 
     @Volatile
     private var engineReady = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        pendingInstallApk = savedInstanceState?.getString(STATE_PENDING_APK)?.let(::File)
+        pendingInstallProcessId = savedInstanceState?.getString(STATE_PENDING_INSTALL_PROCESS)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingInstallApk?.absolutePath?.let { outState.putString(STATE_PENDING_APK, it) }
+        pendingInstallProcessId?.let { outState.putString(STATE_PENDING_INSTALL_PROCESS, it) }
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val apk = pendingInstallApk
+        if (apk != null && apk.isFile && canInstallPackages()) {
+            pendingInstallApk = null
+            pendingInstallProcessId = null
+            runCatching { launchPackageInstaller(apk) }
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -65,6 +99,12 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         activeConnections.values.forEach { it.disconnect() }
         activeConnections.clear()
+        if (::channel.isInitialized) {
+            formatConverter.cancelAll()
+            updateDownloader.cancelAll()
+        }
+        pendingDirectoryPicker?.error("ACTIVITY_CLOSED", "目录选择已取消", null)
+        pendingDirectoryPicker = null
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -89,7 +129,14 @@ class MainActivity : FlutterActivity() {
                     val optionId = call.argument<String>("option_id").orEmpty()
                     val processId = call.argument<String>("process_id") ?: UUID.randomUUID().toString()
                     val destination = call.argument<String>("save_destination") ?: "files"
-                    downloadLocally(mediaId, optionId, processId, destination)
+                    val customDestinationUri = call.argument<String>("custom_destination_uri")
+                    downloadLocally(
+                        mediaId,
+                        optionId,
+                        processId,
+                        destination,
+                        customDestinationUri,
+                    )
                 }
             }
             "saveMobileFile" -> withLegacyStoragePermission(result) {
@@ -99,24 +146,59 @@ class MainActivity : FlutterActivity() {
                     require(source.isFile) { "待保存文件不存在" }
                     val destination = call.argument<String>("save_destination") ?: "files"
                     val mediaType = call.argument<String>("media_type") ?: "file"
-                    val published = if (destination == "gallery") {
-                        require(mediaType == "image" || mediaType == "video") {
-                            "只有图片和视频可以保存到相册"
-                        }
-                        publishToGallery(source, mediaType)
-                    } else {
-                        publishToDownloads(source)
-                    }
+                    val customDestinationUri = call.argument<String>("custom_destination_uri")
+                    val published = publishFile(source, destination, mediaType, customDestinationUri)
                     mapOf(
                         "filename" to published.name,
                         "path" to published.location,
-                        "message" to if (destination == "gallery") {
-                            "已保存到系统相册"
-                        } else {
-                            "已保存到 Download/langbai解析/${published.name}"
-                        },
+                        "message" to publishedMessage(destination, published.name),
                     )
                 }
+            }
+            "pickSaveDirectory" -> pickSaveDirectory(result)
+            "convertMedia" -> runAsync(result) {
+                val processId = call.argument<String>("process_id")
+                    ?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+                convertMedia(
+                    processId = processId,
+                    inputPath = call.argument<String>("input_path"),
+                    inputUri = call.argument<String>("input_uri"),
+                    outputFormat = call.argument<String>("output_format").orEmpty(),
+                    quality = call.argument<String>("quality") ?: "high",
+                    destination = call.argument<String>("save_destination") ?: "files",
+                    customDestinationUri = call.argument<String>("custom_destination_uri"),
+                )
+            }
+            "probeMedia" -> runAsync(result) {
+                val taskDirectory = File(cacheDir, "langbai-probe/${UUID.randomUUID()}")
+                taskDirectory.mkdirs()
+                try {
+                    val input = materializeConversionInput(
+                        call.argument<String>("input_path"),
+                        call.argument<String>("input_uri"),
+                        taskDirectory,
+                    )
+                    formatConverter.probeMedia(input)
+                } finally {
+                    taskDirectory.deleteRecursively()
+                }
+            }
+            "cancelConversion" -> {
+                val processId = call.argument<String>("process_id").orEmpty()
+                val pending = processId in activeConversionTasks
+                if (pending) cancelledConversionTasks.add(processId)
+                val stopped = formatConverter.cancel(processId)
+                result.success(mapOf("cancelled" to (pending || stopped)))
+            }
+            "installAppUpdate" -> runAsync(result) {
+                val processId = call.argument<String>("process_id")
+                    ?.takeIf { it.isNotBlank() } ?: "app-update"
+                installAppUpdate(
+                    processId = processId,
+                    url = call.argument<String>("url").orEmpty(),
+                    sha256 = call.argument<String>("sha256").orEmpty(),
+                    sizeBytes = call.argument<Number>("size_bytes")?.toLong(),
+                )
             }
             "cancelDownload" -> {
                 val processId = call.argument<String>("process_id").orEmpty()
@@ -166,6 +248,52 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            DIRECTORY_PICKER_REQUEST -> {
+                val pending = pendingDirectoryPicker ?: return
+                pendingDirectoryPicker = null
+                val uri = data?.data
+                if (resultCode != Activity.RESULT_OK || uri == null) {
+                    pending.error("DIRECTORY_PICK_CANCELLED", "未选择保存目录", null)
+                    return
+                }
+                try {
+                    val requiredFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    require(((data?.flags ?: 0) and requiredFlags) == requiredFlags) {
+                        "系统目录选择器没有授予完整读写权限"
+                    }
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                    )
+                    val name = DocumentFile.fromTreeUri(this, uri)?.name ?: "自选目录"
+                    pending.success(mapOf("uri" to uri.toString(), "name" to name))
+                } catch (error: Throwable) {
+                    pending.error("DIRECTORY_PERMISSION", "无法保留该目录的写入权限", null)
+                }
+            }
+            INSTALL_PERMISSION_REQUEST -> {
+                val apk = pendingInstallApk
+                val processId = pendingInstallProcessId ?: "app-update"
+                pendingInstallApk = null
+                pendingInstallProcessId = null
+                if (apk != null && apk.isFile && canInstallPackages()) {
+                    launchPackageInstaller(apk)
+                } else {
+                    emitUpdateProgress(
+                        processId = processId,
+                        progress = 100.0,
+                        status = "未获得安装权限",
+                    )
+                }
+            }
+        }
+    }
+
     private fun withLegacyStoragePermission(
         result: MethodChannel.Result,
         action: () -> Unit,
@@ -208,6 +336,8 @@ class MainActivity : FlutterActivity() {
 
     private fun capabilities(): Map<String, Any?> = mapOf(
         "platform" to "android",
+        "current_abi" to normalizedAbi(Build.SUPPORTED_ABIS.firstOrNull()),
+        "supported_abis" to Build.SUPPORTED_ABIS.mapNotNull(::normalizedAbi).distinct(),
         "local_resolver" to true,
         "engine_update" to true,
         "download_progress" to true,
@@ -216,18 +346,43 @@ class MainActivity : FlutterActivity() {
         "background_download" to false,
         "save_to_files" to true,
         "save_to_gallery" to true,
+        "custom_save_directory" to true,
+        "format_conversion" to true,
+        "media_probe" to true,
+        "conversion_progress" to true,
+        "conversion_cancellation" to true,
+        "app_update_install" to true,
+        "conversion" to formatConverter.capabilities().let {
+            mapOf(
+                "input_extensions" to it.inputExtensions,
+                "output_formats" to it.outputFormats,
+                "quality_values" to it.qualityValues,
+            )
+        },
         "tools" to mapOf(
             "resolve" to true,
-            "audio_extract" to false,
-            "compress" to false,
+            "audio_extract" to true,
+            "compress" to true,
+            "format_conversion" to true,
             "web_sniff" to false,
             "direct_download" to false,
             "magnet" to false,
             "torrent" to false,
-            "metadata" to false,
+            "metadata" to true,
             "music_search" to true,
         ),
+        "unsupported_tools" to mapOf(
+            "magnet" to "Android 安装包未内置 P2P 引擎；请在 Windows 端使用磁力下载。",
+            "torrent" to "Android 安装包未内置种子/P2P 引擎；请在 Windows 端使用。",
+        ),
     )
+
+    private fun normalizedAbi(value: String?): String? = when (value) {
+        "arm64-v8a" -> "arm64"
+        "armeabi-v7a" -> "armv7"
+        "x86_64" -> "x86_64"
+        else -> null
+    }
 
     private fun cancelDownload(processId: String): Boolean {
         if (processId.isBlank()) return false
@@ -238,12 +393,233 @@ class MainActivity : FlutterActivity() {
         } ?: false
         val stopped = runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }
             .getOrDefault(false)
-        return requested || disconnected || stopped || progressState.containsKey(processId)
+        val updateStopped = updateDownloader.cancel(processId)
+        return requested || disconnected || stopped || updateStopped || progressState.containsKey(processId)
+    }
+
+    private fun pickSaveDirectory(result: MethodChannel.Result) {
+        if (pendingDirectoryPicker != null) {
+            result.error("DIRECTORY_PICK_ACTIVE", "目录选择窗口已打开", null)
+            return
+        }
+        pendingDirectoryPicker = result
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+            )
+        }
+        try {
+            startActivityForResult(intent, DIRECTORY_PICKER_REQUEST)
+        } catch (error: Throwable) {
+            pendingDirectoryPicker = null
+            result.error("DIRECTORY_PICK_UNAVAILABLE", "系统目录选择器不可用", null)
+        }
+    }
+
+    private fun convertMedia(
+        processId: String,
+        inputPath: String?,
+        inputUri: String?,
+        outputFormat: String,
+        quality: String,
+        destination: String,
+        customDestinationUri: String?,
+    ): Map<String, Any?> {
+        check(activeConversionTasks.add(processId)) { "同一转换任务已在运行" }
+        val safeId = processId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64)
+        val taskDirectory = File(cacheDir, "langbai-convert/$safeId")
+        try {
+            taskDirectory.deleteRecursively()
+            require(taskDirectory.mkdirs() || taskDirectory.isDirectory) { "无法创建转换目录" }
+            val input = materializeConversionInput(inputPath, inputUri, taskDirectory)
+            check(processId !in cancelledConversionTasks) { "转换已取消" }
+            val output = formatConverter.convert(
+                processId = processId,
+                input = input,
+                outputDirectory = taskDirectory,
+                outputFormat = outputFormat,
+                quality = quality,
+                isCancelled = { processId in cancelledConversionTasks },
+            ) { progress ->
+                mainHandler.post {
+                    channel.invokeMethod(
+                        "conversionProgress",
+                        mapOf(
+                            "process_id" to processId,
+                            "progress" to progress.percent,
+                            "status" to progress.status,
+                            "speed_bytes_per_second" to progress.speedBytesPerSecond,
+                            "average_speed_bytes_per_second" to progress.averageSpeedBytesPerSecond,
+                        ),
+                    )
+                }
+            }
+            val format = output.extension.lowercase(Locale.ROOT)
+            val mediaType = when (format) {
+                in IMAGE_EXTENSIONS, "bmp", "heic", "heif" -> "image"
+                in AUDIO_EXTENSIONS, "aac" -> "audio"
+                else -> "video"
+            }
+            val published = publishFile(output, destination, mediaType, customDestinationUri)
+            return mapOf(
+                "process_id" to processId,
+                "filename" to published.name,
+                "path" to published.location,
+                "format" to format,
+                "message" to publishedMessage(destination, published.name),
+            )
+        } finally {
+            taskDirectory.deleteRecursively()
+            activeConversionTasks.remove(processId)
+            cancelledConversionTasks.remove(processId)
+        }
+    }
+
+    private fun materializeConversionInput(
+        inputPath: String?,
+        inputUri: String?,
+        taskDirectory: File,
+    ): File {
+        inputPath?.takeIf { it.isNotBlank() }?.let { path ->
+            val source = File(path)
+            require(source.isFile) { "待转换文件不存在" }
+            require(source.length() <= MAX_DOWNLOAD_BYTES) { "待转换文件超过 8 GB 安全上限" }
+            return source
+        }
+        val uri = inputUri?.takeIf { it.isNotBlank() }?.let(Uri::parse)
+            ?: error("请选择待转换文件")
+        require(uri.scheme == "content") { "待转换文件地址不受支持" }
+        val displayName = DocumentFile.fromSingleUri(this, uri)?.name ?: "input.bin"
+        val destination = File(taskDirectory, safeFilename(displayName))
+        contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(destination).use { output ->
+                val buffer = ByteArray(128 * 1024)
+                var total = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= MAX_DOWNLOAD_BYTES) { "待转换文件超过 8 GB 安全上限" }
+                    output.write(buffer, 0, count)
+                }
+            }
+        } ?: error("无法读取待转换文件")
+        require(destination.length() > 0) { "待转换文件为空" }
+        return destination
+    }
+
+    private fun installAppUpdate(
+        processId: String,
+        url: String,
+        sha256: String,
+        sizeBytes: Long?,
+    ): Map<String, Any?> {
+        try {
+            val apk = updateDownloader.downloadAndVerify(processId, url, sha256, sizeBytes) { value ->
+                val progress = if (value.totalBytes != null && value.totalBytes > 0) {
+                    value.downloadedBytes * 100.0 / value.totalBytes
+                } else {
+                    0.0
+                }
+                emitUpdateProgress(
+                    processId = processId,
+                    progress = progress,
+                    status = "正在下载更新",
+                    downloadedBytes = value.downloadedBytes,
+                    totalBytes = value.totalBytes,
+                    speedBytesPerSecond = value.speedBytesPerSecond,
+                    averageSpeedBytesPerSecond = value.averageSpeedBytesPerSecond,
+                )
+            }
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageArchiveInfo(
+                    apk.absolutePath,
+                    PackageManager.PackageInfoFlags.of(0),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+            }
+            require(archiveInfo?.packageName == packageName) { "更新包应用标识不匹配" }
+            emitUpdateProgress(processId, 100.0, "校验通过，准备安装", apk.length(), apk.length())
+            val permissionRequired = !canInstallPackages()
+            mainHandler.post {
+                runCatching { requestPackageInstall(processId, apk) }
+                    .onFailure { emitUpdateProgress(processId, 100.0, "无法打开系统安装器") }
+            }
+            return mapOf(
+                "process_id" to processId,
+                "verified" to true,
+                "installer_started" to !permissionRequired,
+                "awaiting_install_permission" to permissionRequired,
+                "message" to if (permissionRequired) "请允许安装未知应用" else "系统安装器已打开",
+            )
+        } finally {
+            cancelledProcesses.remove(processId)
+        }
+    }
+
+    private fun requestPackageInstall(processId: String, apk: File) {
+        if (!canInstallPackages()) {
+            pendingInstallApk = apk
+            pendingInstallProcessId = processId
+            emitUpdateProgress(processId, 100.0, "请允许安装未知应用")
+            val settings = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName"),
+            )
+            startActivityForResult(settings, INSTALL_PERMISSION_REQUEST)
+            return
+        }
+        launchPackageInstaller(apk)
+    }
+
+    private fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    private fun launchPackageInstaller(apk: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    private fun emitUpdateProgress(
+        processId: String,
+        progress: Double,
+        status: String,
+        downloadedBytes: Long? = null,
+        totalBytes: Long? = null,
+        speedBytesPerSecond: Double? = null,
+        averageSpeedBytesPerSecond: Double? = null,
+    ) {
+        mainHandler.post {
+            channel.invokeMethod(
+                "updateProgress",
+                mapOf(
+                    "process_id" to processId,
+                    "progress" to progress.coerceIn(0.0, 100.0),
+                    "status" to status,
+                    "downloaded_bytes" to downloadedBytes,
+                    "total_bytes" to totalBytes,
+                    "speed_bytes_per_second" to speedBytesPerSecond,
+                    "average_speed_bytes_per_second" to averageSpeedBytesPerSecond,
+                ),
+            )
+        }
     }
 
     private fun clearSession() {
         resolved.clear()
         (activeConnections.keys + progressState.keys).toSet().forEach(::cancelDownload)
+        formatConverter.cancelAll()
+        activeConversionTasks.forEach(cancelledConversionTasks::add)
+        updateDownloader.cancelAll()
         cacheDir.listFiles()
             ?.filter { it.name.startsWith("langbai-bilibili-") }
             ?.forEach(File::delete)
@@ -254,7 +630,6 @@ class MainActivity : FlutterActivity() {
         if (engineReady) return
         YoutubeDL.getInstance().init(applicationContext)
         FFmpeg.getInstance().init(applicationContext)
-        Aria2c.getInstance().init(applicationContext)
         engineReady = true
     }
 
@@ -286,10 +661,14 @@ class MainActivity : FlutterActivity() {
 
         addVideoOptions(effective.optJSONArray("formats"), specs, options)
         addAudioOptions(effective.optJSONArray("formats"), specs, options)
-        addEntryImages(root.optJSONArray("entries"), specs, options)
+        val entryImageCount = addEntryImages(root.optJSONArray("entries"), specs, options)
+        if (entryImageCount > 0) {
+            options.removeAll { it["kind"] != "image" }
+            specs.entries.removeAll { it.value.kind != "image" }
+        }
 
         val thumbnail = text(effective, "thumbnail") ?: text(root, "thumbnail")
-        if (!thumbnail.isNullOrBlank()) {
+        if (!thumbnail.isNullOrBlank() && entryImageCount == 0) {
             val extension = extensionFromUrl(thumbnail, "jpg")
             val id = "image:cover"
             specs[id] = LocalOption(
@@ -303,6 +682,7 @@ class MainActivity : FlutterActivity() {
                 kind = "image",
                 label = "最高质量封面 · ${extension.uppercase()}",
                 extension = extension,
+                previewUrl = thumbnail,
             )
         }
 
@@ -507,6 +887,7 @@ class MainActivity : FlutterActivity() {
         }
 
         val imageUrls = linkedSetOf<String>()
+        val postImageUrls = linkedSetOf<String>()
         val coverUrl = firstKuaishouUrl(photo.optJSONArray("coverUrls"))
         if (coverUrl != null) imageUrls += coverUrl
         for (key in listOf("imageUrls", "images")) {
@@ -519,12 +900,19 @@ class MainActivity : FlutterActivity() {
                 }
                 if (imageUrl?.startsWith("http://") == true || imageUrl?.startsWith("https://") == true) {
                     imageUrls += imageUrl
+                    postImageUrls += imageUrl
                 }
                 if (imageUrls.size >= 40) break
             }
         }
+        if (postImageUrls.isNotEmpty()) {
+            specs.entries.removeAll { it.value.kind == "video" }
+            options.removeAll { it["kind"] == "video" }
+            imageUrls.clear()
+            imageUrls += postImageUrls
+        }
         imageUrls.forEachIndexed { index, imageUrl ->
-            val isCover = imageUrl == coverUrl
+            val isCover = postImageUrls.isEmpty() && imageUrl == coverUrl
             val id = if (isCover) "image:cover" else "image:${index + 1}"
             val extension = extensionFromUrl(imageUrl, "jpg")
             specs[id] = LocalOption(
@@ -538,6 +926,7 @@ class MainActivity : FlutterActivity() {
                 kind = "image",
                 label = if (isCover) "最高质量封面" else "图片 ${index + 1}",
                 extension = extension,
+                previewUrl = imageUrl,
             )
         }
         require(options.isNotEmpty()) { "快手匿名分享页没有返回视频或图片地址" }
@@ -638,29 +1027,34 @@ class MainActivity : FlutterActivity() {
         val video = detail.optJSONObject("video") ?: JSONObject()
         val specs = linkedMapOf<String, LocalOption>()
         val options = mutableListOf<Map<String, Any?>>()
-        val playUrl = firstHttpUrl(video.optJSONObject("play_addr")?.optJSONArray("url_list"))
+        val images = detail.optJSONArray("images")
+        val imageCount = images?.length() ?: 0
+        val originalPlayUrl = firstHttpUrl(video.optJSONObject("play_addr")?.optJSONArray("url_list"))
+        val playUrl = originalPlayUrl?.let(MediaUrlNormalizer::normalizeDouyinPlayUrl)
         val width = positiveInt(video, "width")
         val height = positiveInt(video, "height")
-        if (playUrl != null) {
-            val resolution = Uri.parse(playUrl).getQueryParameter("ratio")
+        if (MediaUrlNormalizer.shouldExposeDouyinVideo(playUrl, imageCount)) {
+            val publicPlayUrl = requireNotNull(playUrl)
+            val resolution = Uri.parse(publicPlayUrl).getQueryParameter("ratio")
                 ?: if (width != null && height != null) "${width}x$height" else null
             val id = "video:douyin-share"
             specs[id] = LocalOption(
                 "video",
                 "mp4",
-                directUrl = playUrl,
+                directUrl = publicPlayUrl,
+                fallbackUrl = originalPlayUrl?.takeIf { it != publicPlayUrl },
                 headers = mapOf("User-Agent" to DOUYIN_MOBILE_USER_AGENT),
             )
             options += optionMap(
                 id = id,
                 kind = "video",
-                label = "抖音公开视频 · MP4",
+                label = "抖音公开视频 · MP4 · 无平台水印优先，失败时使用原站兼容源",
                 extension = "mp4",
                 resolution = resolution,
             )
         }
         val coverUrl = firstHttpUrl(video.optJSONObject("cover")?.optJSONArray("url_list"))
-        if (coverUrl != null) {
+        if (coverUrl != null && imageCount == 0) {
             val extension = extensionFromUrl(coverUrl, "jpg")
             specs["image:cover"] = LocalOption(
                 "image",
@@ -673,9 +1067,9 @@ class MainActivity : FlutterActivity() {
                 kind = "image",
                 label = "最高质量封面",
                 extension = extension,
+                previewUrl = coverUrl,
             )
         }
-        val images = detail.optJSONArray("images")
         if (images != null) {
             for (index in 0 until minOf(images.length(), 20)) {
                 val image = images.optJSONObject(index) ?: continue
@@ -690,7 +1084,13 @@ class MainActivity : FlutterActivity() {
                     directUrl = imageUrl,
                     headers = mapOf("User-Agent" to DOUYIN_MOBILE_USER_AGENT),
                 )
-                options += optionMap(id, "image", "图片 ${index + 1}", extension)
+                options += optionMap(
+                    id,
+                    "image",
+                    "图片 ${index + 1}",
+                    extension,
+                    previewUrl = imageUrl,
+                )
             }
         }
         require(options.isNotEmpty()) { "匿名分享页没有返回视频或图片地址" }
@@ -707,7 +1107,12 @@ class MainActivity : FlutterActivity() {
             "duration_seconds" to positiveInt(video, "duration")?.div(1000),
             "thumbnail_url" to coverUrl,
             "options" to options,
-            "warnings" to listOf("不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"),
+            "warnings" to listOfNotNull(
+                "不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。",
+                originalPlayUrl?.takeIf { it != playUrl && imageCount == 0 }?.let {
+                    "无平台水印优先，失败时使用原站兼容源。"
+                },
+            ),
         )
     }
 
@@ -834,8 +1239,8 @@ class MainActivity : FlutterActivity() {
         entries: JSONArray?,
         specs: MutableMap<String, LocalOption>,
         options: MutableList<Map<String, Any?>>,
-    ) {
-        if (entries == null) return
+    ): Int {
+        if (entries == null) return 0
         var imageIndex = 0
         for (index in 0 until entries.length()) {
             val item = entries.optJSONObject(index) ?: continue
@@ -855,9 +1260,11 @@ class MainActivity : FlutterActivity() {
                 kind = "image",
                 label = "图集图片 $imageIndex · ${extension.uppercase()}",
                 extension = extension,
+                previewUrl = direct,
             )
             if (imageIndex >= 40) break
         }
+        return imageIndex
     }
 
     private fun addDirectMediaOption(
@@ -885,6 +1292,7 @@ class MainActivity : FlutterActivity() {
             kind = kind,
             label = "原始${kindLabel(kind)} · ${extension.uppercase()}",
             extension = extension,
+            previewUrl = direct.takeIf { kind == "image" },
         )
     }
 
@@ -893,6 +1301,7 @@ class MainActivity : FlutterActivity() {
         optionId: String,
         processId: String,
         destination: String,
+        customDestinationUri: String?,
     ): Map<String, Any?> {
         ensureEngine()
         val media = resolved[mediaId] ?: error("解析结果已过期，请重新解析链接")
@@ -910,23 +1319,20 @@ class MainActivity : FlutterActivity() {
             }
             checkNotCancelled(processId)
             require(output.length() <= MAX_DOWNLOAD_BYTES) { "最终文件超过 8 GB 安全上限" }
-            val published = if (destination == "gallery") {
-                require(option.kind == "image" || option.kind == "video") {
-                    "只有图片和视频可以保存到相册"
-                }
-                publishToGallery(output, option.kind)
-            } else {
-                publishToDownloads(output)
-            }
-            emitProgress(processId, 100.0, 0, "下载完成", force = true)
+            val published = publishFile(output, destination, option.kind, customDestinationUri)
+            emitProgress(
+                processId,
+                100.0,
+                0,
+                "下载完成",
+                force = true,
+                downloadedBytes = output.length(),
+                totalBytes = output.length(),
+            )
             return mapOf(
                 "filename" to published.name,
                 "path" to published.location,
-                "message" to if (destination == "gallery") {
-                    "已保存到系统相册"
-                } else {
-                    "已保存到 Download/langbai解析/${published.name}"
-                },
+                "message" to publishedMessage(destination, published.name),
             )
         } catch (error: Throwable) {
             if (processId in cancelledProcesses) throw DownloadCancelledException()
@@ -968,7 +1374,16 @@ class MainActivity : FlutterActivity() {
             withBilibiliCookieFile(media.bilibiliCookie) { cookieFile ->
                 cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
                 YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
-                    emitProgress(processId, progress.toDouble(), eta, line)
+                    val metrics = parseYtDlpProgress(line, progress.toDouble())
+                    emitProgress(
+                        processId,
+                        progress.toDouble(),
+                        eta,
+                        line,
+                        downloadedBytes = metrics?.downloadedBytes,
+                        totalBytes = metrics?.totalBytes,
+                        reportedSpeedBytesPerSecond = metrics?.speedBytesPerSecond,
+                    )
                 }
             }
         }
@@ -985,8 +1400,32 @@ class MainActivity : FlutterActivity() {
         processId: String,
     ): File {
         val directUrl = option.directUrl ?: error("媒体直链不存在")
+        val candidates = listOfNotNull(directUrl, option.fallbackUrl).distinct()
+        var lastError: Throwable? = null
+        candidates.forEachIndexed { index, candidate ->
+            try {
+                if (index > 0) {
+                    emitProgress(processId, 0.0, null, "无水印源不可用，正在使用原站兼容源", force = true)
+                }
+                return downloadDirectAttempt(option, candidate, title, taskDir, processId)
+            } catch (error: Throwable) {
+                if (error is DownloadCancelledException || processId in cancelledProcesses) throw error
+                lastError = error
+            }
+        }
+        throw lastError ?: error("媒体下载失败")
+    }
+
+    private fun downloadDirectAttempt(
+        option: LocalOption,
+        directUrl: String,
+        title: String,
+        taskDir: File,
+        processId: String,
+    ): File {
         val extension = option.extension.ifBlank { extensionFromUrl(directUrl, "bin") }
         val target = File(taskDir, "${safeFilename(title)}.$extension")
+        target.delete()
         val connection = URL(directUrl).openConnection() as HttpURLConnection
         activeConnections[processId] = connection
         connection.instanceFollowRedirects = true
@@ -1008,16 +1447,36 @@ class MainActivity : FlutterActivity() {
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var downloaded = 0L
-                    while (true) {
-                        checkNotCancelled(processId)
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        downloaded += count
-                        require(downloaded <= MAX_DOWNLOAD_BYTES) { "文件超过 8 GB 安全上限" }
-                        val progress = if (total > 0) downloaded * 100.0 / total else 0.0
-                        emitProgress(processId, progress, null, "正在下载")
+                    var count = input.read(buffer)
+                    if (
+                        count > 0 &&
+                        MediaUrlNormalizer.isObviousTextMediaError(
+                            connection.getHeaderField("Content-Type"),
+                            buffer,
+                            count,
+                        )
+                    ) {
+                        error("媒体源返回了文本错误页或播放清单")
                     }
+                    while (count >= 0) {
+                        checkNotCancelled(processId)
+                        if (count > 0) {
+                            output.write(buffer, 0, count)
+                            downloaded += count
+                            require(downloaded <= MAX_DOWNLOAD_BYTES) { "文件超过 8 GB 安全上限" }
+                            val progress = if (total > 0) downloaded * 100.0 / total else 0.0
+                            emitProgress(
+                                processId,
+                                progress,
+                                null,
+                                "正在下载",
+                                downloadedBytes = downloaded,
+                                totalBytes = total.takeIf { it > 0 },
+                            )
+                        }
+                        count = input.read(buffer)
+                    }
+                    require(downloaded > 0) { "媒体源返回空响应" }
                 }
             }
             return target
@@ -1028,6 +1487,69 @@ class MainActivity : FlutterActivity() {
             activeConnections.remove(processId, connection)
             connection.disconnect()
         }
+    }
+
+    private fun publishFile(
+        source: File,
+        destination: String,
+        mediaType: String,
+        customDestinationUri: String?,
+    ): PublishedFile = when (destination) {
+        "gallery" -> {
+            require(mediaType == "image" || mediaType == "video") {
+                "只有图片和视频可以保存到相册"
+            }
+            publishToGallery(source, mediaType)
+        }
+        "custom" -> publishToCustomDirectory(
+            source,
+            customDestinationUri ?: error("请先选择保存目录"),
+        )
+        "files", "downloads" -> publishToDownloads(source)
+        else -> error("保存位置不受支持")
+    }
+
+    private fun publishedMessage(destination: String, name: String): String = when (destination) {
+        "gallery" -> "已保存到系统相册"
+        "custom" -> "已保存到自选目录/$name"
+        else -> "已保存到 Download/langbai解析/$name"
+    }
+
+    private fun publishToCustomDirectory(source: File, treeUriValue: String): PublishedFile {
+        val treeUri = runCatching { Uri.parse(treeUriValue) }.getOrNull()
+            ?: error("自选目录地址无效")
+        require(treeUri.scheme == "content") { "自选目录地址无效" }
+        val persisted = contentResolver.persistedUriPermissions.any {
+            it.uri == treeUri && it.isWritePermission
+        }
+        require(persisted) { "自选目录权限已失效，请重新选择" }
+        val directory = DocumentFile.fromTreeUri(this, treeUri)
+            ?.takeIf { it.isDirectory && it.canWrite() }
+            ?: error("无法写入自选目录")
+        val name = uniqueDocumentName(directory, source.name.take(220))
+        val target = directory.createFile(mimeType(name), name)
+            ?: error("无法在自选目录中创建文件")
+        try {
+            contentResolver.openOutputStream(target.uri, "w")?.use { output ->
+                source.inputStream().use { it.copyTo(output) }
+            } ?: error("无法写入自选目录")
+            return PublishedFile(target.name ?: name, target.uri.toString())
+        } catch (error: Throwable) {
+            target.delete()
+            throw error
+        }
+    }
+
+    private fun uniqueDocumentName(directory: DocumentFile, filename: String): String {
+        if (directory.findFile(filename) == null) return filename
+        val extension = filename.substringAfterLast('.', "")
+        val stem = filename.removeSuffix(if (extension.isEmpty()) "" else ".$extension")
+        for (index in 2 until 10_000) {
+            val suffix = if (extension.isEmpty()) "" else ".$extension"
+            val candidate = "$stem ($index)$suffix"
+            if (directory.findFile(candidate) == null) return candidate
+        }
+        return "${UUID.randomUUID()}-$filename"
     }
 
     private fun publishToDownloads(source: File): PublishedFile {
@@ -1122,11 +1644,33 @@ class MainActivity : FlutterActivity() {
         etaSeconds: Long?,
         status: String?,
         force: Boolean = false,
+        downloadedBytes: Long? = null,
+        totalBytes: Long? = null,
+        reportedSpeedBytesPerSecond: Double? = null,
     ) {
         val now = System.currentTimeMillis()
         val normalized = progress.coerceIn(0.0, 100.0)
         val state = progressState.computeIfAbsent(processId) { ProgressState() }
+        var instantSpeed = reportedSpeedBytesPerSecond
+        var averageSpeed: Double? = null
         synchronized(state) {
+            if (downloadedBytes != null) {
+                if (state.startedAt == 0L || downloadedBytes < state.lastBytes) {
+                    state.startedAt = now
+                    state.lastBytes = 0
+                    state.lastBytesAt = now
+                }
+                val sampleMillis = now - state.lastBytesAt
+                if (instantSpeed == null && sampleMillis > 0) {
+                    instantSpeed = (downloadedBytes - state.lastBytes).coerceAtLeast(0) * 1000.0 / sampleMillis
+                }
+                val elapsedMillis = now - state.startedAt
+                if (elapsedMillis > 0) {
+                    averageSpeed = downloadedBytes * 1000.0 / elapsedMillis
+                }
+                state.lastBytes = downloadedBytes
+                state.lastBytesAt = now
+            }
             if (
                 !force &&
                 normalized < 100.0 &&
@@ -1146,9 +1690,49 @@ class MainActivity : FlutterActivity() {
                     "progress" to normalized,
                     "eta_seconds" to etaSeconds,
                     "status" to status,
+                    "downloaded_bytes" to downloadedBytes,
+                    "total_bytes" to totalBytes,
+                    "speed_bytes_per_second" to instantSpeed,
+                    "average_speed_bytes_per_second" to averageSpeed,
                 ),
             )
         }
+    }
+
+    private fun parseYtDlpProgress(line: String?, progress: Double): DownloadMetrics? {
+        if (line.isNullOrBlank()) return null
+        val totalMatch = Regex("\\bof\\s+~?\\s*([0-9.]+)\\s*([KMGTPE]?i?B)\\b", RegexOption.IGNORE_CASE)
+            .find(line)
+        val total = totalMatch?.let {
+            parseByteQuantity(it.groupValues[1], it.groupValues[2])
+        }
+        val speedMatch = Regex("\\bat\\s+([0-9.]+)\\s*([KMGTPE]?i?B)/s\\b", RegexOption.IGNORE_CASE)
+            .find(line)
+        val speed = speedMatch?.let {
+            parseByteQuantity(it.groupValues[1], it.groupValues[2])?.toDouble()
+        }
+        if (total == null && speed == null) return null
+        return DownloadMetrics(
+            downloadedBytes = total?.let { (it * progress.coerceIn(0.0, 100.0) / 100.0).toLong() },
+            totalBytes = total,
+            speedBytesPerSecond = speed,
+        )
+    }
+
+    private fun parseByteQuantity(number: String, unit: String): Long? {
+        val value = number.toDoubleOrNull() ?: return null
+        val normalized = unit.uppercase(Locale.ROOT)
+        val power = when (normalized.firstOrNull()) {
+            'K' -> 1
+            'M' -> 2
+            'G' -> 3
+            'T' -> 4
+            'P' -> 5
+            'E' -> 6
+            else -> 0
+        }
+        val base = if ("IB" in normalized) 1024.0 else 1000.0
+        return (value * Math.pow(base, power.toDouble())).toLong()
     }
 
     private fun checkNotCancelled(processId: String) {
@@ -1197,6 +1781,7 @@ class MainActivity : FlutterActivity() {
         fps: Double? = null,
         filesize: Long? = null,
         requiresMerge: Boolean = false,
+        previewUrl: String? = null,
     ): Map<String, Any?> = mapOf(
         "id" to id,
         "kind" to kind,
@@ -1208,6 +1793,7 @@ class MainActivity : FlutterActivity() {
         "filesize" to filesize,
         "filesize_label" to filesize?.let(::humanBytes),
         "requires_merge" to requiresMerge,
+        "preview_url" to previewUrl,
     )
 
     private fun text(objectValue: JSONObject, key: String): String? {
@@ -1340,6 +1926,7 @@ class MainActivity : FlutterActivity() {
         val selector: String? = null,
         val audioQuality: String? = null,
         val directUrl: String? = null,
+        val fallbackUrl: String? = null,
         val headers: Map<String, String> = emptyMap(),
     )
 
@@ -1351,6 +1938,15 @@ class MainActivity : FlutterActivity() {
     private data class ProgressState(
         var progress: Double = -1.0,
         var timestamp: Long = 0,
+        var startedAt: Long = 0,
+        var lastBytes: Long = 0,
+        var lastBytesAt: Long = 0,
+    )
+
+    private data class DownloadMetrics(
+        val downloadedBytes: Long?,
+        val totalBytes: Long?,
+        val speedBytesPerSecond: Double?,
     )
 
     private class DownloadCancelledException : RuntimeException("下载已取消")
@@ -1366,6 +1962,10 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val STORAGE_PERMISSION_REQUEST = 1708
+        private const val DIRECTORY_PICKER_REQUEST = 1709
+        private const val INSTALL_PERMISSION_REQUEST = 1710
+        private const val STATE_PENDING_APK = "langbai.pending_install_apk"
+        private const val STATE_PENDING_INSTALL_PROCESS = "langbai.pending_install_process"
         private const val MAX_HTML_BYTES = 8 * 1024 * 1024
         private const val MAX_DOWNLOAD_BYTES = 8L * 1024 * 1024 * 1024
         private const val DOUYIN_MOBILE_USER_AGENT =

@@ -316,46 +316,101 @@ class _TaskRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final job = record.job;
     final completed = job.state == JobState.completed;
+    final metrics = _dashboardTransferSummary(job);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-      child: Row(
-        children: [
-          Icon(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final title = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(record.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+              if (metrics.isNotEmpty)
+                Text(
+                  metrics,
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 11,
+                  ),
+                ),
+            ],
+          );
+          final progress = LinearProgressIndicator(
+            minHeight: 5,
+            borderRadius: BorderRadius.circular(8),
+            value: job.state == JobState.queued ? null : job.progress,
+          );
+          final icon = Icon(
             completed
                 ? Icons.check_circle_outline_rounded
                 : Icons.downloading_rounded,
             color: completed
                 ? context.palette.success
                 : Theme.of(context).colorScheme.primary,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            flex: 4,
-            child: Text(
-              record.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            flex: 3,
-            child: LinearProgressIndicator(
-              minHeight: 5,
-              borderRadius: BorderRadius.circular(8),
-              value: job.state == JobState.queued ? null : job.progress,
-            ),
-          ),
-          const SizedBox(width: 12),
-          SizedBox(
-            width: 58,
-            child: Text(
-              '${(job.progress * 100).round()}%',
-              textAlign: TextAlign.end,
-            ),
-          ),
-        ],
+          );
+          if (constraints.maxWidth < 520) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    icon,
+                    const SizedBox(width: 12),
+                    Expanded(child: title),
+                    const SizedBox(width: 8),
+                    Text('${(job.progress * 100).round()}%'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                progress,
+              ],
+            );
+          }
+          return Row(
+            children: [
+              icon,
+              const SizedBox(width: 12),
+              Expanded(flex: 4, child: title),
+              const SizedBox(width: 12),
+              Expanded(flex: 3, child: progress),
+              const SizedBox(width: 12),
+              SizedBox(
+                width: 58,
+                child: Text(
+                  '${(job.progress * 100).round()}%',
+                  textAlign: TextAlign.end,
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
+}
+
+String _dashboardTransferSummary(DownloadJob job) {
+  final parts = <String>[];
+  if (job.downloadedBytes != null) {
+    parts.add(
+      job.totalBytes == null
+          ? _dashboardBytes(job.downloadedBytes!)
+          : '${_dashboardBytes(job.downloadedBytes!)} / ${_dashboardBytes(job.totalBytes!)}',
+    );
+  }
+  final speed = job.speedBytesPerSecond ?? job.averageSpeedBytesPerSecond;
+  if (speed != null && speed > 0) {
+    parts.add('${_dashboardBytes(speed.round())}/s');
+  }
+  return parts.join(' · ');
+}
+
+String _dashboardBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kib = bytes / 1024;
+  if (kib < 1024) return '${kib.toStringAsFixed(kib >= 100 ? 0 : 1)} KB';
+  final mib = kib / 1024;
+  if (mib < 1024) return '${mib.toStringAsFixed(mib >= 100 ? 0 : 1)} MB';
+  return '${(mib / 1024).toStringAsFixed(2)} GB';
 }

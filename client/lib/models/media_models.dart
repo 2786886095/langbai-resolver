@@ -3,7 +3,7 @@ enum AssetKind { video, audio, image }
 AssetKind assetKindFromJson(String value) {
   return AssetKind.values.firstWhere(
     (kind) => kind.name == value,
-    orElse: () => AssetKind.video,
+    orElse: () => throw FormatException('未知媒体类型：$value'),
   );
 }
 
@@ -18,6 +18,7 @@ class MediaOption {
     this.fps,
     this.filesize,
     this.filesizeLabel,
+    this.previewUrl,
     this.requiresMerge = false,
   });
 
@@ -32,6 +33,7 @@ class MediaOption {
       fps: (json['fps'] as num?)?.toDouble(),
       filesize: (json['filesize'] as num?)?.toInt(),
       filesizeLabel: json['filesize_label'] as String?,
+      previewUrl: json['preview_url']?.toString(),
       requiresMerge: json['requires_merge'] as bool? ?? false,
     );
   }
@@ -45,6 +47,7 @@ class MediaOption {
   final double? fps;
   final int? filesize;
   final String? filesizeLabel;
+  final String? previewUrl;
   final bool requiresMerge;
 }
 
@@ -88,6 +91,15 @@ class MediaInfo {
   final String? thumbnailUrl;
   final List<MediaOption> options;
   final List<String> warnings;
+
+  List<AssetKind> get availableKinds => AssetKind.values
+      .where((kind) => options.any((option) => option.kind == kind))
+      .toList(growable: false);
+
+  bool get hasVideo => options.any((option) => option.kind == AssetKind.video);
+  bool get onlyImages =>
+      options.isNotEmpty &&
+      options.every((option) => option.kind == AssetKind.image);
 }
 
 enum JobState { queued, running, completed, failed, cancelled }
@@ -99,7 +111,10 @@ class DownloadJob {
     required this.progress,
     this.filename,
     this.error,
+    this.downloadedBytes,
+    this.totalBytes,
     this.speedBytesPerSecond,
+    this.averageSpeedBytesPerSecond,
     this.etaSeconds,
     this.downloadUrl,
   });
@@ -114,7 +129,13 @@ class DownloadJob {
       progress: (json['progress'] as num? ?? 0).toDouble(),
       filename: json['filename'] as String?,
       error: json['error'] as String?,
+      downloadedBytes: _intFromJson(
+        json['downloaded_bytes'] ?? json['bytes_downloaded'],
+      ),
+      totalBytes: _intFromJson(json['total_bytes'] ?? json['bytes_total']),
       speedBytesPerSecond: (json['speed_bytes_per_second'] as num?)?.toDouble(),
+      averageSpeedBytesPerSecond:
+          (json['average_speed_bytes_per_second'] as num?)?.toDouble(),
       etaSeconds: (json['eta_seconds'] as num?)?.toInt(),
       downloadUrl: json['download_url'] as String?,
     );
@@ -126,8 +147,12 @@ class DownloadJob {
     'progress': progress,
     if (filename != null) 'filename': filename,
     if (error != null) 'error': error,
+    if (downloadedBytes != null) 'downloaded_bytes': downloadedBytes,
+    if (totalBytes != null) 'total_bytes': totalBytes,
     if (speedBytesPerSecond != null)
       'speed_bytes_per_second': speedBytesPerSecond,
+    if (averageSpeedBytesPerSecond != null)
+      'average_speed_bytes_per_second': averageSpeedBytesPerSecond,
     if (etaSeconds != null) 'eta_seconds': etaSeconds,
     if (downloadUrl != null) 'download_url': downloadUrl,
   };
@@ -137,10 +162,57 @@ class DownloadJob {
   final double progress;
   final String? filename;
   final String? error;
+  final int? downloadedBytes;
+  final int? totalBytes;
   final double? speedBytesPerSecond;
+  final double? averageSpeedBytesPerSecond;
   final int? etaSeconds;
   final String? downloadUrl;
+
+  DownloadJob copyWith({
+    JobState? state,
+    double? progress,
+    String? filename,
+    String? error,
+    int? downloadedBytes,
+    int? totalBytes,
+    double? speedBytesPerSecond,
+    double? averageSpeedBytesPerSecond,
+    int? etaSeconds,
+    String? downloadUrl,
+  }) => DownloadJob(
+    id: id,
+    state: state ?? this.state,
+    progress: progress ?? this.progress,
+    filename: filename ?? this.filename,
+    error: error ?? this.error,
+    downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+    totalBytes: totalBytes ?? this.totalBytes,
+    speedBytesPerSecond: speedBytesPerSecond ?? this.speedBytesPerSecond,
+    averageSpeedBytesPerSecond:
+        averageSpeedBytesPerSecond ?? this.averageSpeedBytesPerSecond,
+    etaSeconds: etaSeconds ?? this.etaSeconds,
+    downloadUrl: downloadUrl ?? this.downloadUrl,
+  );
+
+  DownloadJob waitingForPublication() =>
+      copyWith(state: JobState.running, progress: 0);
+
+  DownloadJob terminalFailure(String message, {bool cancelled = false}) {
+    if (state == JobState.failed || state == JobState.cancelled) return this;
+    return copyWith(
+      state: cancelled ? JobState.cancelled : JobState.failed,
+      error: message,
+    );
+  }
 }
+
+int? _intFromJson(Object? value) => switch (value) {
+  final int number => number,
+  final num number => number.toInt(),
+  final String text => int.tryParse(text),
+  _ => null,
+};
 
 class MusicSearchResult {
   const MusicSearchResult({

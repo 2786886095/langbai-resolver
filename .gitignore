@@ -12,6 +12,7 @@ client/.dart_tool/
 client/build/
 client/.flutter-plugins
 client/.flutter-plugins-dependencies
+client/android/.kotlin/
 *.ipa
 *.apk
 *.aab

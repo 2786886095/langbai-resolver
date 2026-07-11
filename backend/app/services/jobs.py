@@ -13,7 +13,7 @@ import subprocess  # nosec B404
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -38,6 +38,13 @@ from app.services.security import (
 
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_TEXT_ERROR_CONTENT_TYPES = {
+    "application/json",
+    "application/problem+json",
+    "application/xml",
+    "application/xhtml+xml",
+    "application/dash+xml",
+}
 
 
 class QueueFullError(RuntimeError):
@@ -55,6 +62,16 @@ class JobCancelledError(RuntimeError):
 def _safe_stem(value: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     return cleaned[:120] or "media"
+
+
+def _looks_like_text_error(content_type: str, prefix: bytes) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type.startswith("text/") or media_type in _TEXT_ERROR_CONTENT_TYPES:
+        return True
+    sample = prefix[:1024].lstrip(b"\xef\xbb\xbf\x00\t\r\n ").lower()
+    return sample.startswith(
+        (b"<!doctype", b"<html", b"<script", b"<?xml", b"{", b"[", b"#extm3u")
+    )
 
 
 def _reject_unsafe_ytdlp_info(
@@ -275,6 +292,7 @@ class JobManager:
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._worker_processes: dict[str, Any] = {}
         self._reservations: dict[str, int] = {}
+        self._progress_samples: dict[str, tuple[float, int]] = {}
         settings.download_dir.mkdir(parents=True, exist_ok=True)
         self._prune_orphans()
 
@@ -619,6 +637,33 @@ class JobManager:
     ) -> Path:
         if not spec.direct_url:
             raise ValueError("直链下载任务缺少资源地址")
+        candidates = tuple(dict.fromkeys((spec.direct_url, *spec.fallback_urls)))
+        last_error: Exception | None = None
+        for index, direct_url in enumerate(candidates):
+            attempt = replace(spec, direct_url=direct_url, fallback_urls=())
+            try:
+                return await self._download_direct_once(
+                    job_id, title, attempt, job_dir
+                )
+            except (JobCancelledError, StorageLimitError, UnsafeUrlError):
+                raise
+            except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+                last_error = exc
+                filename = f"{_safe_stem(title)}.{spec.option.extension}"
+                (job_dir / filename).unlink(missing_ok=True)
+                for partial in job_dir.glob(f"{filename}.part*"):
+                    partial.unlink(missing_ok=True)
+                if index == len(candidates) - 1:
+                    raise
+                self._reset_progress(job_id)
+        assert last_error is not None
+        raise last_error
+
+    async def _download_direct_once(
+        self, job_id: str, title: str, spec: DownloadSpec, job_dir: Path
+    ) -> Path:
+        if not spec.direct_url:
+            raise ValueError("直链下载任务缺少资源地址")
         filename = f"{_safe_stem(title)}.{spec.option.extension}"
         path = job_dir / filename
         headers: dict[str, str] = {
@@ -672,6 +717,7 @@ class JobManager:
                     # object as one guarded sequential GET before failing.
                     path.unlink(missing_ok=True)
                     total = None
+                    self._reset_progress(job_id)
             partial = path.with_suffix(f"{path.suffix}.part")
             try:
                 async with stream_public_response_async(
@@ -683,6 +729,9 @@ class JobManager:
                     max_redirects=self._settings.max_redirects,
                 ) as response:
                     response.raise_for_status()
+                    content_type = response.headers.get("content-type", "")
+                    if _looks_like_text_error(content_type, b""):
+                        raise RuntimeError("远程地址返回了文本错误页而不是媒体文件")
                     total = (
                         total
                         or int(response.headers.get("content-length", "0"))
@@ -691,9 +740,16 @@ class JobManager:
                     if total and total > self._settings.max_download_bytes:
                         raise StorageLimitError("远程文件超过单任务下载大小限制")
                     downloaded = 0
+                    inspected_payload = False
                     with partial.open("wb") as output:
                         async for chunk in response.aiter_bytes(256 * 1024):
                             self._check_cancelled(job_id)
+                            if not inspected_payload:
+                                inspected_payload = True
+                                if _looks_like_text_error(content_type, chunk):
+                                    raise RuntimeError(
+                                        "远程地址返回了文本错误页而不是媒体文件"
+                                    )
                             downloaded += len(chunk)
                             if downloaded > self._settings.max_download_bytes:
                                 raise StorageLimitError(
@@ -701,6 +757,8 @@ class JobManager:
                                 )
                             output.write(chunk)
                             self._update_progress(job_id, downloaded, total, None, None)
+                    if downloaded == 0:
+                        raise RuntimeError("远程地址返回了空媒体文件")
                 partial.replace(path)
             finally:
                 partial.unlink(missing_ok=True)
@@ -751,9 +809,17 @@ class JobManager:
                         content_range = response.headers.get("content-range", "")
                         if content_range != f"bytes {start}-{end}/{total}":
                             raise RuntimeError("下载线路返回了不匹配的 Content-Range")
+                        content_type = response.headers.get("content-type", "")
+                        if _looks_like_text_error(content_type, b""):
+                            raise RuntimeError("下载线路返回了文本错误页")
+                        inspected_payload = False
                         with part_paths[index].open("wb") as output:
                             async for chunk in response.aiter_bytes(256 * 1024):
                                 self._check_cancelled(job_id)
+                                if not inspected_payload:
+                                    inspected_payload = True
+                                    if _looks_like_text_error(content_type, chunk):
+                                        raise RuntimeError("下载线路返回了文本错误页")
                                 async with lock:
                                     next_part_size = downloaded[index] + len(chunk)
                                     if next_part_size > expected:
@@ -1433,12 +1499,58 @@ class JobManager:
             job = self._jobs.get(job_id)
             if not job or job.state == JobState.CANCELLED:
                 return
+            now_monotonic = time.monotonic()
+            previous_sample = self._progress_samples.get(job_id)
+            measured_speed: float | None = None
+            progress_restarted = False
+            if speed is None and previous_sample is not None:
+                previous_time, previous_bytes = previous_sample
+                elapsed = now_monotonic - previous_time
+                delta = downloaded - previous_bytes
+                if delta < 0:
+                    progress_restarted = True
+                    self._progress_samples[job_id] = (now_monotonic, downloaded)
+                elif elapsed >= 0.1:
+                    measured_speed = delta / elapsed
+            if (
+                not progress_restarted
+                and (speed is not None or measured_speed is not None or previous_sample is None)
+            ):
+                self._progress_samples[job_id] = (now_monotonic, downloaded)
+
+            effective_speed = None if progress_restarted else speed
+            if not progress_restarted and speed is None:
+                effective_speed = measured_speed
+            if progress_restarted:
+                eta = None
+            elif effective_speed is None:
+                effective_speed = job.speed_bytes_per_second
+            elif effective_speed > 0 and job.speed_bytes_per_second and speed is None:
+                effective_speed = (
+                    job.speed_bytes_per_second * 0.65 + effective_speed * 0.35
+                )
+
             job.downloaded_bytes = downloaded
             job.total_bytes = total
-            job.speed_bytes_per_second = speed
+            job.speed_bytes_per_second = effective_speed
+            if eta is None and total and effective_speed and effective_speed > 0:
+                eta = max(0, round((total - downloaded) / effective_speed))
             job.eta_seconds = eta
             if total:
                 job.progress = min(0.99, downloaded / total)
+            job.updated_at = time.time()
+
+    def _reset_progress(self, job_id: str) -> None:
+        with self._lock:
+            self._progress_samples.pop(job_id, None)
+            job = self._jobs.get(job_id)
+            if not job or job.state == JobState.CANCELLED:
+                return
+            job.progress = 0
+            job.downloaded_bytes = 0
+            job.total_bytes = None
+            job.speed_bytes_per_second = None
+            job.eta_seconds = None
             job.updated_at = time.time()
 
     def _set_progress(self, job_id: str, progress: float) -> None:
@@ -1757,6 +1869,7 @@ class JobManager:
             self._processes.pop(job_id, None)
             self._worker_processes.pop(job_id, None)
             self._reservations.pop(job_id, None)
+            self._progress_samples.pop(job_id, None)
 
     def _cleanup_partials(self, job_id: str) -> None:
         job_dir = self._settings.download_dir / job_id

@@ -23,9 +23,19 @@ const _defaultApiUrl = String.fromEnvironment(
 );
 
 class ParserPage extends StatefulWidget {
-  const ParserPage({super.key, this.initialUrl, this.onJobChanged});
+  const ParserPage({
+    super.key,
+    this.initialUrl,
+    this.defaultSaveDestination = SaveDestination.files,
+    this.customSaveDestinationUri,
+    this.customSaveDestinationName,
+    this.onJobChanged,
+  });
 
   final String? initialUrl;
+  final SaveDestination defaultSaveDestination;
+  final String? customSaveDestinationUri;
+  final String? customSaveDestinationName;
   final void Function(DownloadJob job, MediaInfo media, MediaOption option)?
   onJobChanged;
 
@@ -44,8 +54,11 @@ class _ParserPageState extends State<ParserPage> {
   bool _resolving = false;
   bool _saving = false;
   bool _cancelRequested = false;
+  bool _savingToDevice = false;
   String? _activeLocalProcessId;
   double _saveProgress = 0;
+  TransferProgress? _deviceTransfer;
+  late SaveDestination _taskSaveDestination;
   String? _error;
   BilibiliAccount? _bilibiliAccount;
   bool _bilibiliAuthBusy = false;
@@ -67,6 +80,7 @@ class _ParserPageState extends State<ParserPage> {
     super.initState();
     _serverController = TextEditingController(text: _defaultApiUrl);
     _api = ApiClient(_defaultApiUrl);
+    _taskSaveDestination = widget.defaultSaveDestination;
     _initialize();
   }
 
@@ -125,6 +139,7 @@ class _ParserPageState extends State<ParserPage> {
         _selected = null;
         _job = null;
         _saveProgress = 0;
+        _deviceTransfer = null;
         _error = null;
       });
       ScaffoldMessenger.of(
@@ -211,9 +226,10 @@ class _ParserPageState extends State<ParserPage> {
             )
           : await _api.resolve(url, bilibiliCookie: bilibiliCookie);
       if (!mounted) return;
-      final availableKinds = AssetKind.values
-          .where((kind) => media.options.any((option) => option.kind == kind))
-          .toList();
+      final availableKinds = media.availableKinds;
+      if (availableKinds.isEmpty) {
+        throw const FormatException('解析结果没有可下载的媒体资源');
+      }
       final kind = availableKinds.contains(AssetKind.video)
           ? AssetKind.video
           : availableKinds.first;
@@ -221,6 +237,10 @@ class _ParserPageState extends State<ParserPage> {
         _media = media;
         _kind = kind;
         _selected = media.options.firstWhere((option) => option.kind == kind);
+        _taskSaveDestination = _destinationForKind(
+          widget.defaultSaveDestination,
+          kind,
+        );
       });
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -239,13 +259,19 @@ class _ParserPageState extends State<ParserPage> {
     final media = _media;
     final option = _selected;
     if (media == null || option == null || _saving) return;
-    final destination = await _chooseSaveDestination(option);
-    if (destination == null || !mounted) return;
+    final destination = _destinationForKind(_taskSaveDestination, option.kind);
+    if (destination == SaveDestination.custom &&
+        (widget.customSaveDestinationUri?.trim().isEmpty ?? true)) {
+      setState(() => _error = '自选保存目录不可用，请在设置中重新选择');
+      return;
+    }
     setState(() {
       _error = null;
       _saving = true;
       _cancelRequested = false;
       _saveProgress = 0;
+      _deviceTransfer = null;
+      _savingToDevice = false;
     });
     try {
       if (_usesLocalParser) {
@@ -255,8 +281,9 @@ class _ParserPageState extends State<ParserPage> {
       var job = await _api.createJob(media.mediaId, option.id);
       final taskDeadline = DateTime.now().add(const Duration(hours: 2));
       if (mounted) {
-        setState(() => _job = job);
-        widget.onJobChanged?.call(job, media, option);
+        final visibleJob = _serverJobBeforePublication(job);
+        setState(() => _job = visibleJob);
+        widget.onJobChanged?.call(visibleJob, media, option);
       }
       while (job.state == JobState.queued || job.state == JobState.running) {
         if (_cancelRequested) throw const ApiException('任务已取消');
@@ -267,8 +294,9 @@ class _ParserPageState extends State<ParserPage> {
         await Future<void>.delayed(const Duration(milliseconds: 900));
         job = await _api.getJob(job.id);
         if (!mounted) return;
-        setState(() => _job = job);
-        widget.onJobChanged?.call(job, media, option);
+        final visibleJob = _serverJobBeforePublication(job);
+        setState(() => _job = visibleJob);
+        widget.onJobChanged?.call(visibleJob, media, option);
       }
       if (job.state == JobState.failed) {
         throw ApiException(job.error ?? '服务器下载失败');
@@ -276,6 +304,7 @@ class _ParserPageState extends State<ParserPage> {
       if (job.state == JobState.cancelled) {
         throw const ApiException('任务已取消');
       }
+      if (mounted) setState(() => _savingToDevice = true);
       final result = await saveDownload(
         _api.fileUri(job.id),
         job.filename ?? 'media.${option.extension}',
@@ -283,28 +312,89 @@ class _ParserPageState extends State<ParserPage> {
           if (mounted) setState(() => _saveProgress = progress);
         },
         destination: destination,
+        customDestinationUri: widget.customSaveDestinationUri,
         mediaType: option.kind.name,
         headers: _api.downloadHeaders,
         isCancelled: () => _cancelRequested,
+        onTransferProgress: (progress) {
+          if (!mounted) return;
+          final transferJob = DownloadJob(
+            id: job.id,
+            state: progress.progress >= 1
+                ? JobState.completed
+                : JobState.running,
+            progress: progress.progress,
+            filename: job.filename,
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            speedBytesPerSecond: progress.speedBytesPerSecond,
+            averageSpeedBytesPerSecond: progress.averageSpeedBytesPerSecond,
+            etaSeconds: progress.etaSeconds,
+          );
+          setState(() {
+            _savingToDevice = progress.progress < 1;
+            _deviceTransfer = progress;
+            _job = transferJob;
+            _saveProgress = progress.progress;
+          });
+          widget.onJobChanged?.call(transferJob, media, option);
+        },
       );
       if (!mounted) return;
+      if (result.cancelled) {
+        final cancelled = DownloadJob(
+          id: job.id,
+          state: JobState.cancelled,
+          progress: _saveProgress,
+          filename: job.filename,
+          error: '已取消保存',
+          downloadedBytes: _deviceTransfer?.downloadedBytes,
+          totalBytes: _deviceTransfer?.totalBytes,
+        );
+        setState(() => _job = cancelled);
+        widget.onJobChanged?.call(cancelled, media, option);
+        return;
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(result.message)));
     } on ApiException catch (error) {
-      if (mounted) setState(() => _error = error.message);
+      _recordDownloadFailure(media, option, error.message);
     } on LocalMediaException catch (error) {
-      if (mounted) setState(() => _error = error.message);
+      _recordDownloadFailure(media, option, error.message);
     } on Object catch (error) {
-      if (mounted) setState(() => _error = '下载失败：$error');
+      _recordDownloadFailure(media, option, '下载失败：$error');
     } finally {
       if (mounted) {
         setState(() {
           _saving = false;
+          _savingToDevice = false;
           _activeLocalProcessId = null;
         });
       }
     }
+  }
+
+  DownloadJob _serverJobBeforePublication(DownloadJob job) =>
+      job.state == JobState.completed ? job.waitingForPublication() : job;
+
+  void _recordDownloadFailure(
+    MediaInfo media,
+    MediaOption option,
+    String message,
+  ) {
+    if (!mounted) return;
+    final current = _job;
+    final terminal = current?.terminalFailure(
+      message,
+      cancelled: _cancelRequested,
+    );
+    final changed = current != null && !identical(current, terminal);
+    setState(() {
+      _error = message;
+      if (changed) _job = terminal;
+    });
+    if (changed) widget.onJobChanged?.call(terminal!, media, option);
   }
 
   Future<void> _startLocalDownload(
@@ -327,17 +417,24 @@ class _ParserPageState extends State<ParserPage> {
         kind: option.kind,
         destination: destination,
         processId: jobId,
-        onProgress: (progress) {
+        customDestinationUri: widget.customSaveDestinationUri,
+        onProgressDetails: (progress) {
           if (!mounted) return;
           job = DownloadJob(
             id: jobId,
             state: JobState.running,
-            progress: progress,
+            progress: progress.progress,
             filename: job.filename,
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            speedBytesPerSecond: progress.speedBytesPerSecond,
+            averageSpeedBytesPerSecond: progress.averageSpeedBytesPerSecond,
+            etaSeconds: progress.etaSeconds,
           );
           setState(() {
             _job = job;
-            _saveProgress = progress;
+            _deviceTransfer = progress;
+            _saveProgress = progress.progress;
           });
           widget.onJobChanged?.call(job, media, option);
         },
@@ -349,6 +446,11 @@ class _ParserPageState extends State<ParserPage> {
           state: _cancelRequested ? JobState.cancelled : JobState.failed,
           progress: job.progress,
           error: error.toString(),
+          downloadedBytes: job.downloadedBytes,
+          totalBytes: job.totalBytes,
+          speedBytesPerSecond: job.speedBytesPerSecond,
+          averageSpeedBytesPerSecond: job.averageSpeedBytesPerSecond,
+          etaSeconds: job.etaSeconds,
         );
         setState(() => _job = job);
         widget.onJobChanged?.call(job, media, option);
@@ -361,6 +463,9 @@ class _ParserPageState extends State<ParserPage> {
       state: JobState.completed,
       progress: 1,
       filename: result.filename,
+      downloadedBytes: job.downloadedBytes,
+      totalBytes: job.totalBytes,
+      averageSpeedBytesPerSecond: job.averageSpeedBytesPerSecond,
     );
     setState(() {
       _job = job;
@@ -385,6 +490,11 @@ class _ParserPageState extends State<ParserPage> {
           state: JobState.cancelled,
           progress: _job?.progress ?? 0,
           error: '用户已取消',
+          downloadedBytes: _job?.downloadedBytes,
+          totalBytes: _job?.totalBytes,
+          speedBytesPerSecond: _job?.speedBytesPerSecond,
+          averageSpeedBytesPerSecond: _job?.averageSpeedBytesPerSecond,
+          etaSeconds: _job?.etaSeconds,
         );
       } else if (_job != null) {
         cancelled = await _api.cancelJob(_job!.id);
@@ -402,16 +512,33 @@ class _ParserPageState extends State<ParserPage> {
     }
   }
 
-  Future<SaveDestination?> _chooseSaveDestination(MediaOption option) async {
-    if (!_isMobile || option.kind == AssetKind.audio) {
+  SaveDestination _destinationForKind(
+    SaveDestination destination,
+    AssetKind kind,
+  ) {
+    if (destination == SaveDestination.gallery && kind == AssetKind.audio) {
       return SaveDestination.files;
     }
-    final typeLabel = option.kind == AssetKind.video ? '视频' : '图片';
+    return destination;
+  }
+
+  Future<void> _changeTaskSaveDestination(MediaOption option) async {
+    final selected = await _chooseSaveDestination(option);
+    if (selected == null || !mounted) return;
+    setState(() => _taskSaveDestination = selected);
+  }
+
+  Future<SaveDestination?> _chooseSaveDestination(MediaOption option) async {
+    final typeLabel = switch (option.kind) {
+      AssetKind.video => '视频',
+      AssetKind.audio => '音频',
+      AssetKind.image => '图片',
+    };
     return showModalBottomSheet<SaveDestination>(
       context: context,
       showDragHandle: true,
       builder: (context) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -432,25 +559,50 @@ class _ParserPageState extends State<ParserPage> {
               _SaveDestinationTile(
                 icon: Icons.folder_rounded,
                 title: '保存到文件',
-                subtitle: defaultTargetPlatform == TargetPlatform.android
+                subtitle: !_isMobile
+                    ? '使用系统保存面板或默认下载目录'
+                    : defaultTargetPlatform == TargetPlatform.android
                     ? '保存到 Download/langbai解析'
                     : '保存到“文件”App/langbai解析',
+                selected: _taskSaveDestination == SaveDestination.files,
                 onTap: () => Navigator.pop(context, SaveDestination.files),
               ),
-              const SizedBox(height: 10),
-              _SaveDestinationTile(
-                icon: option.kind == AssetKind.video
-                    ? Icons.video_library_rounded
-                    : Icons.photo_library_rounded,
-                title: '保存到相册',
-                subtitle: '保存到系统照片库，首次使用会请求权限',
-                onTap: () => Navigator.pop(context, SaveDestination.gallery),
-              ),
+              if (_isMobile && option.kind != AssetKind.audio) ...[
+                const SizedBox(height: 10),
+                _SaveDestinationTile(
+                  icon: option.kind == AssetKind.video
+                      ? Icons.video_library_rounded
+                      : Icons.photo_library_rounded,
+                  title: '保存到相册',
+                  subtitle: '保存到系统照片库，首次使用会请求权限',
+                  selected: _taskSaveDestination == SaveDestination.gallery,
+                  onTap: () => Navigator.pop(context, SaveDestination.gallery),
+                ),
+              ],
+              if (widget.customSaveDestinationUri?.trim().isNotEmpty ==
+                  true) ...[
+                const SizedBox(height: 10),
+                _SaveDestinationTile(
+                  icon: Icons.create_new_folder_outlined,
+                  title: '保存到自选目录',
+                  subtitle: widget.customSaveDestinationName ?? '设置中选择的目录',
+                  selected: _taskSaveDestination == SaveDestination.custom,
+                  onTap: () => Navigator.pop(context, SaveDestination.custom),
+                ),
+              ],
             ],
           ),
         ),
       ),
     );
+  }
+
+  String _saveDestinationLabel(MediaOption option) {
+    return switch (_destinationForKind(_taskSaveDestination, option.kind)) {
+      SaveDestination.files => '文件 / 下载目录',
+      SaveDestination.gallery => '系统相册',
+      SaveDestination.custom => widget.customSaveDestinationName ?? '自选目录',
+    };
   }
 
   Future<void> _changeApiUrl(String value) async {
@@ -525,41 +677,49 @@ class _ParserPageState extends State<ParserPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final title = Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '链接解析',
+                            style: Theme.of(context).textTheme.headlineSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '选择视频清晰度、音频、封面或图片',
+                            style: TextStyle(color: context.palette.textMuted),
+                          ),
+                        ],
+                      );
+                      final action = _usesLocalParser
+                          ? const Chip(
+                              avatar: Icon(Icons.smartphone_rounded, size: 17),
+                              label: Text('本机解析'),
+                            )
+                          : IconButton(
+                              tooltip: '解析服务设置',
+                              onPressed: _saving || _resolving
+                                  ? null
+                                  : _showSettings,
+                              icon: const Icon(Icons.tune_rounded),
+                            );
+                      if (constraints.maxWidth < 520) {
+                        return Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '链接解析',
-                              style: Theme.of(context).textTheme.headlineSmall
-                                  ?.copyWith(fontWeight: FontWeight.w800),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              '选择视频清晰度、音频、封面或图片',
-                              style: TextStyle(
-                                color: context.palette.textMuted,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      if (_usesLocalParser)
-                        const Chip(
-                          avatar: Icon(Icons.smartphone_rounded, size: 17),
-                          label: Text('本机解析'),
-                        )
-                      else
-                        IconButton(
-                          tooltip: '解析服务设置',
-                          onPressed: _saving || _resolving
-                              ? null
-                              : _showSettings,
-                          icon: const Icon(Icons.tune_rounded),
-                        ),
-                    ],
+                          children: [title, const SizedBox(height: 10), action],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(child: title),
+                          const SizedBox(width: 12),
+                          action,
+                        ],
+                      );
+                    },
                   ),
                   const SizedBox(height: 24),
                   _buildHero(context),
@@ -761,9 +921,7 @@ class _ParserPageState extends State<ParserPage> {
   }
 
   Widget _buildMediaCard(BuildContext context, MediaInfo media) {
-    final kinds = AssetKind.values
-        .where((kind) => media.options.any((option) => option.kind == kind))
-        .toList(growable: false);
+    final kinds = media.availableKinds;
     final options = media.options
         .where((option) => option.kind == _kind)
         .toList();
@@ -776,7 +934,11 @@ class _ParserPageState extends State<ParserPage> {
             LayoutBuilder(
               builder: (context, constraints) {
                 final narrow = constraints.maxWidth < 700;
-                final preview = _MediaPreview(media: media);
+                final preview = _MediaPreview(
+                  media: media,
+                  kind: _kind,
+                  option: _selected,
+                );
                 final details = _MediaDetails(media: media);
                 return narrow
                     ? Column(
@@ -817,48 +979,98 @@ class _ParserPageState extends State<ParserPage> {
               ),
             ],
             const SizedBox(height: 22),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                for (final kind in kinds)
-                  ChoiceChip(
-                    selected: _kind == kind,
-                    onSelected: _saving
-                        ? null
-                        : (_) {
-                            setState(() {
-                              _kind = kind;
-                              _selected = media.options.firstWhere(
-                                (option) => option.kind == kind,
-                              );
-                            });
-                          },
-                    avatar: Icon(_kindIcon(kind), size: 18),
-                    label: Text(
-                      '${_kindLabel(kind)} (${media.options.where((o) => o.kind == kind).length})',
-                    ),
+            if (kinds.length == 1)
+              Row(
+                children: [
+                  Icon(_kindIcon(kinds.single), size: 19),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${_kindLabel(kinds.single)} (${options.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
-              ],
-            ),
+                ],
+              )
+            else
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final kind in kinds)
+                    ChoiceChip(
+                      selected: _kind == kind,
+                      onSelected: _saving
+                          ? null
+                          : (_) {
+                              setState(() {
+                                _kind = kind;
+                                _selected = media.options.firstWhere(
+                                  (option) => option.kind == kind,
+                                );
+                                _taskSaveDestination = _destinationForKind(
+                                  _taskSaveDestination,
+                                  kind,
+                                );
+                              });
+                            },
+                      avatar: Icon(_kindIcon(kind), size: 18),
+                      label: Text(
+                        '${_kindLabel(kind)} (${media.options.where((o) => o.kind == kind).length})',
+                      ),
+                    ),
+                ],
+              ),
             const SizedBox(height: 14),
-            ...options.map(
-              (option) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _OptionTile(
-                  option: option,
-                  selected: _selected?.id == option.id,
-                  enabled: !_saving,
-                  onTap: () => setState(() => _selected = option),
+            if (_kind == AssetKind.image)
+              _ImageOptionsGrid(
+                options: options,
+                selectedId: _selected?.id,
+                enabled: !_saving,
+                onSelected: (option) => setState(() => _selected = option),
+              )
+            else
+              ...options.map(
+                (option) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _OptionTile(
+                    option: option,
+                    selected: _selected?.id == option.id,
+                    enabled: !_saving,
+                    onTap: () => setState(() => _selected = option),
+                  ),
                 ),
               ),
-            ),
+            if (_selected != null) ...[
+              const SizedBox(height: 2),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: _saving
+                      ? null
+                      : () => _changeTaskSaveDestination(_selected!),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.save_alt_rounded),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          '保存到：${_saveDestinationLabel(_selected!)} · 更改',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (_job != null || _saving) ...[
               const SizedBox(height: 8),
               _ProgressPanel(
                 job: _job,
                 saveProgress: _saveProgress,
                 local: _usesLocalParser,
+                savingToDevice: _savingToDevice,
                 onCancel: _saving ? _cancelDownload : null,
               ),
             ],
@@ -936,22 +1148,41 @@ class _ErrorBanner extends StatelessWidget {
 }
 
 class _MediaPreview extends StatelessWidget {
-  const _MediaPreview({required this.media});
+  const _MediaPreview({
+    required this.media,
+    required this.kind,
+    required this.option,
+  });
 
   final MediaInfo media;
+  final AssetKind kind;
+  final MediaOption? option;
 
   @override
   Widget build(BuildContext context) {
+    final previewUrl = kind == AssetKind.image
+        ? option?.previewUrl ?? media.thumbnailUrl
+        : media.thumbnailUrl;
     return AspectRatio(
-      aspectRatio: 16 / 9,
+      aspectRatio: kind == AssetKind.image ? 4 / 3 : 16 / 9,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(18),
         child: DecoratedBox(
           decoration: BoxDecoration(color: context.palette.surfaceRaised),
-          child: media.thumbnailUrl == null
-              ? const Center(child: Icon(Icons.movie_filter_rounded, size: 44))
+          child: previewUrl == null
+              ? Center(
+                  child: Icon(
+                    kind == AssetKind.image
+                        ? Icons.image_outlined
+                        : kind == AssetKind.audio
+                        ? Icons.graphic_eq_rounded
+                        : Icons.movie_filter_rounded,
+                    size: 44,
+                  ),
+                )
               : Image.network(
-                  media.thumbnailUrl!,
+                  previewUrl,
+                  key: ValueKey('media-preview-${option?.id ?? kind.name}'),
                   fit: BoxFit.cover,
                   errorBuilder: (_, _, _) => const Center(
                     child: Icon(Icons.broken_image_outlined, size: 42),
@@ -1004,7 +1235,7 @@ class _MediaDetails extends StatelessWidget {
           children: [
             if (media.creator != null)
               _Meta(icon: Icons.person_outline_rounded, text: media.creator!),
-            if (media.durationSeconds != null)
+            if (media.durationSeconds != null && !media.onlyImages)
               _Meta(
                 icon: Icons.schedule_rounded,
                 text: _duration(media.durationSeconds!),
@@ -1038,6 +1269,145 @@ class _Meta extends StatelessWidget {
           style: TextStyle(color: context.palette.textMuted, fontSize: 13),
         ),
       ],
+    );
+  }
+}
+
+class _ImageOptionsGrid extends StatelessWidget {
+  const _ImageOptionsGrid({
+    required this.options,
+    required this.selectedId,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final List<MediaOption> options;
+  final String? selectedId;
+  final bool enabled;
+  final ValueChanged<MediaOption> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 760
+            ? 4
+            : constraints.maxWidth >= 500
+            ? 3
+            : constraints.maxWidth >= 300
+            ? 2
+            : 1;
+        final width = (constraints.maxWidth - (columns - 1) * 10) / columns;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (final option in options)
+              SizedBox(
+                width: width,
+                child: _ImageOptionTile(
+                  option: option,
+                  selected: selectedId == option.id,
+                  enabled: enabled,
+                  onTap: () => onSelected(option),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ImageOptionTile extends StatelessWidget {
+  const _ImageOptionTile({
+    required this.option,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final MediaOption option;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      image: true,
+      selected: selected,
+      enabled: enabled,
+      button: true,
+      label: option.label,
+      child: Material(
+        color: selected
+            ? context.palette.navigationSelected
+            : context.palette.surfaceRaised,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(14),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: selected
+                    ? Theme.of(context).colorScheme.primary
+                    : context.palette.border,
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AspectRatio(
+                  aspectRatio: 4 / 3,
+                  child: option.previewUrl == null
+                      ? ColoredBox(
+                          color: context.palette.surfaceRaised,
+                          child: const Center(
+                            child: Icon(Icons.image_not_supported_outlined),
+                          ),
+                        )
+                      : Image.network(
+                          option.previewUrl!,
+                          key: ValueKey('image-option-preview-${option.id}'),
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const Center(
+                            child: Icon(Icons.broken_image_outlined),
+                          ),
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          option.label,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      if (selected) ...[
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.check_circle_rounded,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1147,17 +1517,21 @@ class _SaveDestinationTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.selected = false,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: context.palette.surfaceRaised,
+      color: selected
+          ? context.palette.navigationSelected
+          : context.palette.surfaceRaised,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         onTap: onTap,
@@ -1195,7 +1569,12 @@ class _SaveDestinationTile extends StatelessWidget {
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded),
+              Icon(
+                selected
+                    ? Icons.check_circle_rounded
+                    : Icons.chevron_right_rounded,
+                color: selected ? Theme.of(context).colorScheme.primary : null,
+              ),
             ],
           ),
         ),
@@ -1209,12 +1588,14 @@ class _ProgressPanel extends StatelessWidget {
     required this.job,
     required this.saveProgress,
     required this.local,
+    required this.savingToDevice,
     this.onCancel,
   });
 
   final DownloadJob? job;
   final double saveProgress;
   final bool local;
+  final bool savingToDevice;
   final VoidCallback? onCancel;
 
   @override
@@ -1222,7 +1603,9 @@ class _ProgressPanel extends StatelessWidget {
     final current = job;
     final serverDone = current?.state == JobState.completed;
     final value = serverDone ? saveProgress : current?.progress ?? 0;
-    final label = current == null
+    final label = savingToDevice
+        ? '正在保存到设备…'
+        : current == null
         ? '正在创建任务…'
         : switch (current.state) {
             JobState.queued => local ? '等待本机处理…' : '等待服务器处理…',
@@ -1231,9 +1614,22 @@ class _ProgressPanel extends StatelessWidget {
             JobState.failed => '任务失败',
             JobState.cancelled => '任务已取消',
           };
-    final details = current?.speedBytesPerSecond == null
+    final details = current == null
         ? null
-        : '${_speed(current!.speedBytesPerSecond!)}${current.etaSeconds == null ? '' : ' · 约 ${current.etaSeconds}s'}';
+        : [
+            if (current.downloadedBytes != null)
+              current.totalBytes == null
+                  ? _humanBytes(current.downloadedBytes!)
+                  : '${_humanBytes(current.downloadedBytes!)} / ${_humanBytes(current.totalBytes!)}',
+            if ((current.speedBytesPerSecond ??
+                    current.averageSpeedBytesPerSecond) !=
+                null)
+              _speed(
+                current.speedBytesPerSecond ??
+                    current.averageSpeedBytesPerSecond!,
+              ),
+            if (current.etaSeconds != null) '约 ${current.etaSeconds}s',
+          ].join(' · ');
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -1246,14 +1642,6 @@ class _ProgressPanel extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(label)),
-              if (details != null)
-                Text(
-                  details,
-                  style: TextStyle(
-                    color: context.palette.textMuted,
-                    fontSize: 12,
-                  ),
-                ),
               if (onCancel != null &&
                   (current == null ||
                       current.state == JobState.queued ||
@@ -1263,6 +1651,13 @@ class _ProgressPanel extends StatelessWidget {
               ],
             ],
           ),
+          if (details?.isNotEmpty == true) ...[
+            const SizedBox(height: 4),
+            Text(
+              details!,
+              style: TextStyle(color: context.palette.textMuted, fontSize: 12),
+            ),
+          ],
           const SizedBox(height: 9),
           LinearProgressIndicator(value: value <= 0 ? null : value),
         ],
@@ -1445,7 +1840,7 @@ IconData _kindIcon(AssetKind kind) => switch (kind) {
 String _kindLabel(AssetKind kind) => switch (kind) {
   AssetKind.video => '视频',
   AssetKind.audio => '音频',
-  AssetKind.image => '封面 / 图片',
+  AssetKind.image => '图片',
 };
 
 String _duration(int total) {
@@ -1463,4 +1858,14 @@ String _speed(double bytesPerSecond) {
   return megabytes >= 1
       ? '${megabytes.toStringAsFixed(1)} MB/s'
       : '${(bytesPerSecond / 1024).toStringAsFixed(0)} KB/s';
+}
+
+String _humanBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kib = bytes / 1024;
+  if (kib < 1024) return '${kib.toStringAsFixed(kib >= 100 ? 0 : 1)} KB';
+  final mib = kib / 1024;
+  if (mib < 1024) return '${mib.toStringAsFixed(mib >= 100 ? 0 : 1)} MB';
+  final gib = mib / 1024;
+  return '${gib.toStringAsFixed(2)} GB';
 }

@@ -1,0 +1,643 @@
+{
+  "schema_version": 1,
+  "release_candidate": "1.1.0",
+  "generated_at_utc": "2026-07-11T13:52:23+00:00",
+  "probe_mode": "POST /api/v1/resolve metadata only; no download; no cookies",
+  "base_url": "http://127.0.0.1:10708",
+  "health": {
+    "status": "ok",
+    "extractor": "yt-dlp 2026.07.04",
+    "ffmpeg_available": true,
+    "instance_id": "f09a02ea62943f2a",
+    "authenticated": false
+  },
+  "network": {
+    "allow_fake_ip_dns": true
+  },
+  "sample_count": 17,
+  "summary": {
+    "success": 13,
+    "partial": 0,
+    "login_required": 1,
+    "geo_restricted": 0,
+    "access_restricted": 0,
+    "not_public": 1,
+    "unsupported": 0,
+    "runtime_missing": 1,
+    "timeout": 0,
+    "failed": 1
+  },
+  "results": [
+    {
+      "slug": "douyin",
+      "platform": "抖音",
+      "url": "https://www.douyin.com/video/6961737553342991651",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 DouyinIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/tiktok.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 2 个候选项：image, video",
+      "result": {
+        "reported_platform": "Douyin",
+        "title": "#杨超越 小小水手带你去远航❤️",
+        "option_count": 2,
+        "kinds": [
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "mp4",
+          "webp"
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "has_thumbnail": true,
+        "warnings": [
+          "不读取或上传你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"
+        ]
+      },
+      "elapsed_seconds": 0.8
+    },
+    {
+      "slug": "kuaishou",
+      "platform": "快手",
+      "url": "https://v.kuaishou.com/JogJVR8p",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "中国新闻网公开参评材料中的媒体链接",
+        "url": "https://www.chinanews.com.cn/fileftp/2026/05/2026-05-13/U1106P4T47D56160F29949DT20260513085427.pdf?browser=yes"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 2 个候选项：image, video",
+      "result": {
+        "reported_platform": "Kuaishou",
+        "title": "#大爱吾疆 这里是亚欧大陆腹地，一场持续亿万年的“造山运动”劈出三列巍峨山脉，环抱两大盆地。新疆的骨架，由此诞生。如今，“三山”新潮奔涌，“两盆”活力升腾，这166万多平方公里山河正写下新的传奇。大美新疆，大爱吾疆。 #三里河",
+        "option_count": 2,
+        "kinds": [
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "mp4"
+        ],
+        "resolutions": [
+          "1280x720"
+        ],
+        "has_thumbnail": true,
+        "warnings": [
+          "不读取或上传你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"
+        ]
+      },
+      "elapsed_seconds": 1.3
+    },
+    {
+      "slug": "bilibili",
+      "platform": "B站",
+      "url": "https://www.bilibili.com/video/BV13x41117TL",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 BiliBiliIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/bilibili.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 13 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "BiliBili",
+        "title": "阿滴英文｜英文歌分享#6 \"Closer",
+        "option_count": 13,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1280×720",
+          "1920×1080",
+          "640×360",
+          "852×480"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 1.0
+    },
+    {
+      "slug": "youtube",
+      "platform": "YouTube",
+      "url": "https://www.youtube.com/watch?v=YE7VzlLtp-4",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 YoutubeIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/youtube/_video.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 23 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "Youtube",
+        "title": "Big Buck Bunny",
+        "option_count": 23,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4",
+          "webm"
+        ],
+        "resolutions": [
+          "1280×720",
+          "1920×1080",
+          "256×144",
+          "426×240",
+          "640×360",
+          "854×480"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 1.7
+    },
+    {
+      "slug": "tiktok",
+      "platform": "TikTok",
+      "url": "https://www.tiktok.com/@barudakhb_/video/6984138651336838402",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 TikTokIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/tiktok.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 8 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "TikTok",
+        "title": "Balas @yolaaftwsr hayu yu ? #SquadRandom_ 🔥",
+        "option_count": 8,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "576×1024"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 1.56
+    },
+    {
+      "slug": "instagram",
+      "platform": "Instagram",
+      "url": "https://instagram.com/p/aye83DjauH/",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 InstagramIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/instagram.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 2 个候选项：image, video",
+      "result": {
+        "reported_platform": "Instagram",
+        "title": "Video by naomipq",
+        "option_count": 2,
+        "kinds": [
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "mp4"
+        ],
+        "resolutions": [
+          "640×640"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 2.81
+    },
+    {
+      "slug": "twitter",
+      "platform": "X / Twitter",
+      "url": "https://x.com/TopHeroes_/status/2001950365332455490",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 TwitterIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/twitter.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 4 个候选项：image, video",
+      "result": {
+        "reported_platform": "Twitter",
+        "title": "Top Heroes - Forgot to close My heroes solo level up in my phone ✨Unlock the fog,...",
+        "option_count": 4,
+        "kinds": [
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "mp4"
+        ],
+        "resolutions": [
+          "320×320",
+          "540×540",
+          "720×720"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 1.28
+    },
+    {
+      "slug": "facebook",
+      "platform": "Facebook",
+      "url": "https://www.facebook.com/WatchESLOne/videos/359649331226507/",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 FacebookIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/facebook.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 9 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "Facebook",
+        "title": "Fnatic vs. EG - Group A - Opening Match - ESL One Birmingham Day 1",
+        "option_count": 9,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1280×720",
+          "1920×1080",
+          "640×360",
+          "960×540"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 3.42
+    },
+    {
+      "slug": "vimeo",
+      "platform": "Vimeo",
+      "url": "https://vimeo.com/54469442",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 VimeoIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/vimeo.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 11 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "Vimeo",
+        "title": "Kathy Sierra: Building the minimum Badass User, Business of Software 2012",
+        "option_count": 11,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1920×1080",
+          "480×270",
+          "640×360"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 2.77
+    },
+    {
+      "slug": "ixigua",
+      "platform": "西瓜视频",
+      "url": "https://www.ixigua.com/6996881461559165471",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 IxiguaIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/ixigua.py"
+      },
+      "http_status": 422,
+      "status": "login_required",
+      "status_zh": "需要登录",
+      "summary": "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取登录 Cookie",
+      "elapsed_seconds": 0.97
+    },
+    {
+      "slug": "xiaohongshu",
+      "platform": "小红书",
+      "url": "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 XiaoHongShuIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/xiaohongshu.py"
+      },
+      "http_status": 200,
+      "status": "not_public",
+      "status_zh": "站点/内容未公开",
+      "summary": "小红书 - 你访问的页面不见了 站点专用解析器不可用，已使用通用网页媒体解析。",
+      "result": {
+        "reported_platform": "www.xiaohongshu.com",
+        "title": "小红书 - 你访问的页面不见了",
+        "option_count": 1,
+        "kinds": [
+          "image"
+        ],
+        "extensions": [
+          "png"
+        ],
+        "resolutions": [],
+        "has_thumbnail": true,
+        "warnings": [
+          "站点专用解析器不可用，已使用通用网页媒体解析。"
+        ]
+      },
+      "elapsed_seconds": 1.27
+    },
+    {
+      "slug": "weibo",
+      "platform": "微博",
+      "url": "https://weibo.com/7827771738/N4xlMvjhI",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 WeiboIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/weibo.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 7 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "Weibo",
+        "title": "【睡前消息暑假版第一期：拉泰国一把 对中国有好处】",
+        "option_count": 7,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1280×720",
+          "1920×1080"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 0.91
+    },
+    {
+      "slug": "youku",
+      "platform": "优酷",
+      "url": "https://v.youku.com/v_show/id_XNjA1NzA2Njgw.html",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 YoukuIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/youku.py"
+      },
+      "http_status": 422,
+      "status": "failed",
+      "status_zh": "失败",
+      "summary": "该页面暂未发现公开媒体资源：[youku] XNjA1NzA2Njgw: Unable to download webpage: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1006) (caused by SSLError('[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.",
+      "elapsed_seconds": 0.64
+    },
+    {
+      "slug": "acfun",
+      "platform": "AcFun",
+      "url": "https://www.acfun.cn/v/ac35457073",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 AcFunVideoIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/acfun.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 10 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "AcFunVideo",
+        "title": "1 8 岁 现 状",
+        "option_count": 10,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpeg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1080×1920",
+          "360×640",
+          "540×960",
+          "720×1280"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 0.81
+    },
+    {
+      "slug": "dailymotion",
+      "platform": "Dailymotion",
+      "url": "https://www.dailymotion.com/video/x5kesuj",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 DailymotionIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/dailymotion.py"
+      },
+      "http_status": 422,
+      "status": "runtime_missing",
+      "status_zh": "缺少运行依赖",
+      "summary": "该页面暂未发现公开媒体资源：[dailymotion] x5kesuj: The extractor is attempting impersonation, but none of these impersonate targets are available: firefox. See https://github.com/yt-dlp/yt-dlp#impersonation for information on installing the required dependencies",
+      "elapsed_seconds": 4.81
+    },
+    {
+      "slug": "twitch",
+      "platform": "Twitch Clips",
+      "url": "https://clips.twitch.tv/FaintLightGullWholeWheat",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 TwitchClipsIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/twitch.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 5 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "TwitchClips",
+        "title": "EA Play 2016 Live from the Novo Theatre",
+        "option_count": 5,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "jpg",
+          "m4a",
+          "mp3",
+          "mp4"
+        ],
+        "resolutions": [
+          "1080p"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 0.99
+    },
+    {
+      "slug": "reddit",
+      "platform": "Reddit",
+      "url": "https://www.reddit.com/r/videos/comments/6rrwyj/that_small_heart_attack/",
+      "expected_kinds": [
+        "video"
+      ],
+      "source": {
+        "label": "yt-dlp 2026.07.04 RedditIE test",
+        "url": "https://github.com/yt-dlp/yt-dlp/blob/2026.07.04/yt_dlp/extractor/reddit.py"
+      },
+      "http_status": 200,
+      "status": "success",
+      "status_zh": "成功",
+      "summary": "返回 12 个候选项：audio, image, video",
+      "result": {
+        "reported_platform": "Reddit",
+        "title": "That small heart attack.",
+        "option_count": 12,
+        "kinds": [
+          "audio",
+          "image",
+          "video"
+        ],
+        "extensions": [
+          "m4a",
+          "mp3",
+          "mp4",
+          "png"
+        ],
+        "resolutions": [
+          "132×240",
+          "176×320",
+          "198×360",
+          "238×432",
+          "264×480",
+          "352×640"
+        ],
+        "has_thumbnail": true,
+        "warnings": []
+      },
+      "elapsed_seconds": 3.34
+    }
+  ],
+  "limitations": [
+    "每个平台只使用一个公开样例，不能代表该平台的所有页面类型。",
+    "成功仅表示解析接口返回期望媒体候选项；本探针不下载媒体字节。",
+    "本矩阵验证 FastAPI 后端，不覆盖 Android/iOS 安装包内的本机解析引擎。",
+    "不读取或上传浏览器 Cookie，不绕过登录、年龄、地区、付费、私密或 DRM 限制。",
+    "结果受执行日期、出口地区、平台风控、样例存续和 yt-dlp 版本影响。",
+    "平台规则会变化，本报告不是“所有平台永久可用”的承诺。"
+  ],
+  "last_rerun": {
+    "generated_at_utc": "2026-07-11T13:52:23+00:00",
+    "platforms": [
+      "AcFun",
+      "Twitch Clips"
+    ],
+    "reason": "backend format filtering fix for missing vcodec/acodec metadata"
+  }
+}

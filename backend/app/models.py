@@ -26,6 +26,7 @@ class MediaOption(BaseModel):
     fps: float | None = None
     filesize: int | None = None
     filesize_label: str | None = None
+    preview_url: str | None = None
     requires_merge: bool = False
 
 

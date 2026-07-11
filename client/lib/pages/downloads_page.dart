@@ -132,88 +132,167 @@ class _DownloadTile extends StatelessWidget {
       JobState.cancelled => context.palette.textMuted,
       _ => Theme.of(context).colorScheme.primary,
     };
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              Icons.downloading_rounded,
-              color: Theme.of(context).colorScheme.primary,
+    final metrics = _transferSummary(job);
+    final retry =
+        (job.state == JobState.failed || job.state == JobState.cancelled) &&
+        record.sourceUrl.isNotEmpty;
+    final icon = Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primaryContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Icon(
+        Icons.downloading_rounded,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+    );
+    Widget details({required bool showProgress}) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          record.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${record.platform} · ${record.optionLabel}',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: context.palette.textMuted, fontSize: 12),
+        ),
+        if (showProgress) ...[
+          const SizedBox(height: 9),
+          LinearProgressIndicator(
+            minHeight: 5,
+            value: job.state == JobState.queued ? null : job.progress,
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ],
+        if (metrics.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            metrics,
+            key: ValueKey('download-metrics-${job.id}'),
+            style: TextStyle(color: context.palette.textMuted, fontSize: 12),
+          ),
+        ],
+        if (job.error != null && job.error!.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            job.error!,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+              fontSize: 12,
             ),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        ],
+      ],
+    );
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 560) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  record.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    icon,
+                    const SizedBox(width: 12),
+                    Expanded(child: details(showProgress: false)),
+                  ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '${record.platform} · ${record.optionLabel}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: context.palette.textMuted,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 9),
+                const SizedBox(height: 10),
                 LinearProgressIndicator(
                   minHeight: 5,
                   value: job.state == JobState.queued ? null : job.progress,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                if (job.error != null && job.error!.isNotEmpty) ...[
-                  const SizedBox(height: 6),
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 12,
+                  runSpacing: 4,
+                  children: [
+                    Text(
+                      '$stateLabel · ${(job.progress * 100).round()}%',
+                      style: TextStyle(
+                        color: stateColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    if (retry)
+                      TextButton(onPressed: onRetry, child: const Text('重新解析')),
+                  ],
+                ),
+              ],
+            );
+          }
+          return Row(
+            children: [
+              icon,
+              const SizedBox(width: 14),
+              Expanded(child: details(showProgress: true)),
+              const SizedBox(width: 18),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
                   Text(
-                    job.error!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                    stateLabel,
                     style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                      fontSize: 12,
+                      color: stateColor,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
+                  const SizedBox(height: 5),
+                  Text(
+                    '${(job.progress * 100).round()}%',
+                    style: TextStyle(color: context.palette.textMuted),
+                  ),
+                  if (retry)
+                    TextButton(onPressed: onRetry, child: const Text('重新解析')),
                 ],
-              ],
-            ),
-          ),
-          const SizedBox(width: 18),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                stateLabel,
-                style: TextStyle(
-                  color: stateColor,
-                  fontWeight: FontWeight.w700,
-                ),
               ),
-              const SizedBox(height: 5),
-              Text(
-                '${(job.progress * 100).round()}%',
-                style: TextStyle(color: context.palette.textMuted),
-              ),
-              if ((job.state == JobState.failed ||
-                      job.state == JobState.cancelled) &&
-                  record.sourceUrl.isNotEmpty)
-                TextButton(onPressed: onRetry, child: const Text('重新解析')),
             ],
-          ),
-        ],
+          );
+        },
       ),
     );
   }
+}
+
+String _transferSummary(DownloadJob job) {
+  final parts = <String>[];
+  if (job.downloadedBytes != null) {
+    parts.add(
+      job.totalBytes == null
+          ? _humanBytes(job.downloadedBytes!)
+          : '${_humanBytes(job.downloadedBytes!)} / ${_humanBytes(job.totalBytes!)}',
+    );
+  }
+  final speed = job.speedBytesPerSecond ?? job.averageSpeedBytesPerSecond;
+  if (speed != null && speed > 0) parts.add('${_humanBytes(speed.round())}/s');
+  if (job.etaSeconds != null) parts.add('约 ${job.etaSeconds}s');
+  return parts.join(' · ');
+}
+
+String _humanBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kib = bytes / 1024;
+  if (kib < 1024) return '${kib.toStringAsFixed(kib >= 100 ? 0 : 1)} KB';
+  final mib = kib / 1024;
+  if (mib < 1024) return '${mib.toStringAsFixed(mib >= 100 ? 0 : 1)} MB';
+  return '${(mib / 1024).toStringAsFixed(2)} GB';
 }

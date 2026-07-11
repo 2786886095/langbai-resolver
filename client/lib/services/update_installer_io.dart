@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'update_models.dart';
+import 'local_media_service.dart';
 
 const _trustedWindowsSignerSha256 = String.fromEnvironment(
   'WINDOWS_UPDATE_CERT_SHA256',
@@ -15,7 +16,7 @@ const _maxInstallerBytes = 512 * 1024 * 1024;
 const _downloadTimeout = Duration(minutes: 15);
 const _inactivityTimeout = Duration(seconds: 45);
 
-Future<void> installUpdate(
+Future<String> installUpdate(
   UpdatePlatformRelease release, {
   required String version,
   void Function(double progress)? onProgress,
@@ -26,12 +27,25 @@ Future<void> installUpdate(
       uri.userInfo.isNotEmpty) {
     throw StateError('更新下载地址无效');
   }
+  if (Platform.isAndroid) {
+    return LocalMediaService.instance.installAppUpdate(
+      url: uri.toString(),
+      sha256: release.sha256,
+      sizeBytes: release.sizeBytes,
+      onProgress: (progress) => onProgress?.call(progress.progress),
+    );
+  }
+  if (Platform.isIOS) {
+    throw UnsupportedError(
+      'iOS 不允许应用直接安装下载的 IPA，请通过 App Store、TestFlight 或原签名渠道更新。',
+    );
+  }
   if (!Platform.isWindows) {
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       throw StateError('无法打开更新下载页');
     }
     onProgress?.call(1);
-    return;
+    return '已打开更新页面';
   }
 
   final directory = await getTemporaryDirectory();

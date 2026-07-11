@@ -10,6 +10,9 @@ void main() {
         state: JobState.cancelled,
         progress: 0.42,
         error: '用户已取消',
+        downloadedBytes: 42 * 1024 * 1024,
+        totalBytes: 100 * 1024 * 1024,
+        speedBytesPerSecond: 3 * 1024 * 1024,
       ),
       title: '测试视频',
       optionLabel: '1080p · AVC',
@@ -22,6 +25,9 @@ void main() {
     expect(restored.job.state, JobState.cancelled);
     expect(restored.job.progress, 0.42);
     expect(restored.job.error, '用户已取消');
+    expect(restored.job.downloadedBytes, 42 * 1024 * 1024);
+    expect(restored.job.totalBytes, 100 * 1024 * 1024);
+    expect(restored.job.speedBytesPerSecond, 3 * 1024 * 1024);
     expect(restored.sourceUrl, record.sourceUrl);
     expect(restored.optionLabel, record.optionLabel);
   });

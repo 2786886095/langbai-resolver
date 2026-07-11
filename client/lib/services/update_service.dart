@@ -5,12 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'runtime_environment.dart';
 import 'api_endpoint_policy.dart';
+import 'local_media_service.dart';
+import 'runtime_environment.dart';
 import 'service_credential_store.dart';
 import 'update_models.dart';
 
-const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.0.9');
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.0');
 
 const _configuredManifestUrl = String.fromEnvironment('UPDATE_MANIFEST_URL');
 const _defaultApiUrl = String.fromEnvironment(
@@ -86,7 +87,20 @@ class UpdateService {
       throw const UpdateException('更新清单缺少版本号');
     }
     final platform = currentUpdatePlatform;
-    final release = manifest.releaseFor(platform);
+    String? androidAbi;
+    if (platform == 'android' && LocalMediaService.isSupported) {
+      try {
+        androidAbi =
+            (await LocalMediaService.instance.capabilities()).currentAbi;
+      } on Object {
+        // Older Android packages do not report ABI; universal remains the fallback.
+      }
+    }
+    final release = selectUpdateRelease(
+      manifest,
+      platform,
+      androidAbi: androidAbi,
+    );
     if (platform == 'windows' && release != null && release.url.isNotEmpty) {
       if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(release.sha256)) {
         throw const UpdateException('Windows 更新清单缺少有效的 SHA-256');
@@ -98,6 +112,14 @@ class UpdateService {
         r'^[0-9a-fA-F]{64}$',
       ).hasMatch(release.signingCertificateSha256)) {
         throw const UpdateException('Windows 更新清单缺少签名证书指纹');
+      }
+    }
+    if (platform == 'android' && release != null && release.url.isNotEmpty) {
+      if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(release.sha256)) {
+        throw const UpdateException('Android 更新清单缺少有效的 SHA-256');
+      }
+      if (release.sizeBytes == null || release.sizeBytes! <= 0) {
+        throw const UpdateException('Android 更新清单缺少有效的安装包大小');
       }
     }
 
@@ -119,6 +141,34 @@ class UpdateService {
       hasUpdate: compareVersions(manifest.version, appVersion) > 0,
     );
   }
+}
+
+UpdatePlatformRelease? selectUpdateRelease(
+  UpdateManifest manifest,
+  String platform, {
+  String? androidAbi,
+}) {
+  if (platform.toLowerCase() != 'android') {
+    return manifest.releaseFor(platform);
+  }
+  for (final key in androidReleaseKeysForAbi(androidAbi)) {
+    final release = manifest.releaseFor(key);
+    if (release != null && release.url.isNotEmpty) return release;
+  }
+  return manifest.releaseFor('android');
+}
+
+List<String> androidReleaseKeysForAbi(String? abi) {
+  final normalized = abi?.trim().toLowerCase().replaceAll('_', '-');
+  final architecture = switch (normalized) {
+    'arm64-v8a' || 'aarch64' || 'arm64' => 'arm64',
+    'armeabi-v7a' || 'armeabi-v7' || 'armv7' || 'arm-v7a' => 'armv7',
+    'x86-64' || 'x64' || 'amd64' => 'x86_64',
+    _ => null,
+  };
+  return architecture == null
+      ? const ['android']
+      : ['android-$architecture', 'android'];
 }
 
 bool _isAllowedManifestUri(Uri uri) {

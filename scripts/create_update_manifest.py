@@ -57,6 +57,17 @@ def build_manifest(
 
     windows = _asset(assets, "langbai-resolver-Setup.exe", required=False)
     android = _asset(assets, "langbai-resolver-Android.apk")
+    android_variants = {
+        "android-arm64": _asset(
+            assets, "langbai-resolver-Android-arm64.apk", required=False
+        ),
+        "android-armv7": _asset(
+            assets, "langbai-resolver-Android-armv7.apk", required=False
+        ),
+        "android-x86_64": _asset(
+            assets, "langbai-resolver-Android-x86_64.apk", required=False
+        ),
+    }
     ios = _asset(assets, "langbai-resolver-iOS.ipa", required=False)
     web = _asset(assets, "langbai-resolver-Web.zip", required=False)
     signer_file = _asset(
@@ -72,6 +83,9 @@ def build_manifest(
     platforms: dict[str, dict[str, object]] = {
         "android": _platform_release(base, android),
     }
+    for platform, variant in android_variants.items():
+        if variant is not None:
+            platforms[platform] = _platform_release(base, variant)
     if windows is not None and signer_file is not None:
         signer = signer_file.read_text(encoding="utf-8").strip().lower()
         if not _SHA256.fullmatch(signer):

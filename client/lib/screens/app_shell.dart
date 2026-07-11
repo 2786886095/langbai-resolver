@@ -15,6 +15,7 @@ import '../pages/parser_page.dart';
 import '../pages/tools_page.dart';
 import '../services/api_client.dart';
 import '../services/api_endpoint_policy.dart';
+import '../services/download_types.dart';
 import '../services/link_detector.dart';
 import '../services/local_media_service.dart';
 import '../services/service_credential_store.dart';
@@ -57,6 +58,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   DateTime? _lastAutomaticUpdateCheck;
   DateTime? _lastUpdateAttempt;
   String? _downloadDirectory;
+  String? _downloadDirectoryName;
+  SaveDestination _defaultSaveDestination = SaveDestination.files;
+  int _saveConfigRevision = 0;
   String _apiBaseUrl = _defaultShellApiUrl;
   String _serviceAccessToken = '';
   int _serviceConfigRevision = 0;
@@ -116,6 +120,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 progress: record.job.progress,
                 filename: record.job.filename,
                 error: '应用上次退出时任务中断，请重新解析',
+                downloadedBytes: record.job.downloadedBytes,
+                totalBytes: record.job.totalBytes,
+                speedBytesPerSecond: record.job.speedBytesPerSecond,
+                averageSpeedBytesPerSecond:
+                    record.job.averageSpeedBytesPerSecond,
+                etaSeconds: record.job.etaSeconds,
               ),
             );
           }
@@ -133,7 +143,23 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       _lastAutomaticUpdateCheck = lastUpdateCheck == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(lastUpdateCheck);
-      _downloadDirectory = preferences.getString('download_directory');
+      _downloadDirectory =
+          preferences.getString('custom_download_destination_uri') ??
+          preferences.getString('download_directory');
+      _downloadDirectoryName =
+          preferences.getString('custom_download_destination_name') ??
+          _downloadDirectory;
+      final savedDestination = preferences.getString(
+        'default_save_destination',
+      );
+      final restoredDestination =
+          savedDestination == null && _downloadDirectory != null
+          ? SaveDestination.custom
+          : saveDestinationFromName(savedDestination);
+      _defaultSaveDestination =
+          !_isMobile && restoredDestination == SaveDestination.gallery
+          ? SaveDestination.files
+          : restoredDestination;
       _apiBaseUrl = restoredApiUrl;
       _serviceAccessToken = restoredAccessToken;
       _clipboardDetectionEnabled =
@@ -277,13 +303,48 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           defaultTargetPlatform == TargetPlatform.macOS ||
           defaultTargetPlatform == TargetPlatform.linux);
 
+  bool get _isMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
   Future<void> _pickDownloadDirectory() async {
     try {
-      final path = await getDirectoryPath(confirmButtonText: '选择保存文件夹');
+      late final String? path;
+      String? displayName;
+      if (_isMobile && LocalMediaService.isSupported) {
+        final selection = await LocalMediaService.instance.pickSaveDirectory();
+        path = selection.uri;
+        displayName = selection.name;
+      } else {
+        path = await getDirectoryPath(confirmButtonText: '选择保存文件夹');
+        displayName = path?.split(RegExp(r'[\\/]')).last;
+      }
       if (path == null || path.trim().isEmpty || !mounted) return;
       final preferences = await SharedPreferences.getInstance();
       await preferences.setString('download_directory', path.trim());
-      if (mounted) setState(() => _downloadDirectory = path.trim());
+      await preferences.setString(
+        'custom_download_destination_uri',
+        path.trim(),
+      );
+      await preferences.setString(
+        'custom_download_destination_name',
+        displayName?.trim().isNotEmpty == true ? displayName!.trim() : '自选目录',
+      );
+      await preferences.setString(
+        'default_save_destination',
+        SaveDestination.custom.name,
+      );
+      if (mounted) {
+        setState(() {
+          _downloadDirectory = path!.trim();
+          _downloadDirectoryName = displayName?.trim().isNotEmpty == true
+              ? displayName!.trim()
+              : '自选目录';
+          _defaultSaveDestination = SaveDestination.custom;
+          _saveConfigRevision += 1;
+        });
+      }
     } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -296,7 +357,38 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Future<void> _clearDownloadDirectory() async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove('download_directory');
-    if (mounted) setState(() => _downloadDirectory = null);
+    await preferences.remove('custom_download_destination_uri');
+    await preferences.remove('custom_download_destination_name');
+    if (_defaultSaveDestination == SaveDestination.custom) {
+      await preferences.setString(
+        'default_save_destination',
+        SaveDestination.files.name,
+      );
+    }
+    if (mounted) {
+      setState(() {
+        _downloadDirectory = null;
+        _downloadDirectoryName = null;
+        if (_defaultSaveDestination == SaveDestination.custom) {
+          _defaultSaveDestination = SaveDestination.files;
+        }
+        _saveConfigRevision += 1;
+      });
+    }
+  }
+
+  Future<void> _setDefaultSaveDestination(SaveDestination value) async {
+    if (value == SaveDestination.custom && _downloadDirectory == null) {
+      await _pickDownloadDirectory();
+      return;
+    }
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString('default_save_destination', value.name);
+    if (!mounted) return;
+    setState(() {
+      _defaultSaveDestination = value;
+      _saveConfigRevision += 1;
+    });
   }
 
   Future<String?> _saveApiBaseUrl(
@@ -375,53 +467,19 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Future<void> _showUpdateDialog(UpdateCheckResult result) async {
     final release = result.release;
     final hasDownload = release != null && release.url.isNotEmpty;
-    final isWindows = result.platform == 'windows';
+    final isIos = result.platform == 'ios';
+    final canInstall = hasDownload && !isIos;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        icon: const Icon(Icons.system_update_alt_rounded, size: 34),
-        title: Text('发现新版本 ${result.manifest.version}'),
-        content: SizedBox(
-          width: 430,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                result.manifest.notes.isEmpty
-                    ? '新版本已经可以下载。'
-                    : result.manifest.notes,
-              ),
-              const SizedBox(height: 14),
-              Text(
-                hasDownload
-                    ? (isWindows
-                          ? '安装包会在软件内下载并校验，随后自动启动安装。'
-                          : '将打开当前平台的安装包或发布页面。')
-                    : '已检测到新版本，但当前平台的安装包尚未发布。',
-                style: TextStyle(
-                  color: dialogContext.palette.textMuted,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(hasDownload ? '稍后' : '知道了'),
-          ),
-          if (hasDownload)
-            FilledButton.icon(
-              onPressed: () {
+      builder: (dialogContext) => UpdateAvailableDialog(
+        result: result,
+        onDismiss: () => Navigator.pop(dialogContext),
+        onInstall: canInstall
+            ? () {
                 Navigator.pop(dialogContext);
                 _installRelease(release, result.manifest.version);
-              },
-              icon: const Icon(Icons.download_rounded),
-              label: Text(isWindows ? '下载并安装' : '前往更新'),
-            ),
-        ],
+              }
+            : null,
       ),
     );
   }
@@ -462,7 +520,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     );
     await Future<void>.delayed(const Duration(milliseconds: 120));
     try {
-      await installUpdate(
+      final installMessage = await installUpdate(
         release,
         version: version,
         onProgress: (value) => progress.value = value,
@@ -470,10 +528,14 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
         Navigator.of(context, rootNavigator: true).pop();
       }
-      if (mounted && currentUpdatePlatform != 'windows') {
+      if (mounted && currentUpdatePlatform == 'android') {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('已打开更新页面')));
+        ).showSnackBar(SnackBar(content: Text(installMessage)));
+      } else if (mounted && currentUpdatePlatform != 'windows') {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(installMessage)));
       }
     } on Object catch (error) {
       if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
@@ -539,6 +601,20 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         optionLabel: option.label,
         platform: media.platform,
         sourceUrl: media.sourceUrl,
+      );
+    });
+    unawaited(_persistDownloads());
+  }
+
+  void _recordToolJob(DownloadJob job, String title, String optionLabel) {
+    if (!mounted) return;
+    setState(() {
+      _downloads[job.id] = DownloadRecord(
+        job: job,
+        title: title,
+        optionLabel: optionLabel,
+        platform: LocalMediaService.isSupported ? '本机工具' : '高级工具服务',
+        sourceUrl: '',
       );
     });
     unawaited(_persistDownloads());
@@ -613,20 +689,58 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                       '下载',
                       style: TextStyle(fontWeight: FontWeight.w800),
                     ),
-                    const SizedBox(height: 6),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.folder_outlined),
-                      title: const Text('默认保存路径'),
-                      subtitle: Text(
-                        _supportsDirectorySelection
-                            ? (_downloadDirectory ?? '每次下载时选择保存位置')
-                            : '移动端下载后由系统面板选择保存位置',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<SaveDestination>(
+                      // ignore: deprecated_member_use
+                      value: _defaultSaveDestination,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: '默认保存位置',
+                        prefixIcon: Icon(Icons.save_alt_rounded),
+                      ),
+                      items: [
+                        const DropdownMenuItem(
+                          value: SaveDestination.files,
+                          child: Text('文件 / 下载目录'),
+                        ),
+                        if (_isMobile)
+                          const DropdownMenuItem(
+                            value: SaveDestination.gallery,
+                            child: Text('系统相册（视频和图片）'),
+                          ),
+                        if (_isMobile || _supportsDirectorySelection)
+                          DropdownMenuItem(
+                            value: SaveDestination.custom,
+                            child: Text(
+                              _downloadDirectoryName == null
+                                  ? '自选目录…'
+                                  : '自选目录 · $_downloadDirectoryName',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) async {
+                        if (value == null) return;
+                        await _setDefaultSaveDestination(value);
+                        setDialogState(() {});
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _defaultSaveDestination == SaveDestination.gallery
+                          ? '视频和图片会默认写入系统相册；音频仍保存到文件。'
+                          : _defaultSaveDestination == SaveDestination.custom
+                          ? (_downloadDirectoryName ?? '请选择一个可写目录')
+                          : _isMobile
+                          ? '默认保存到系统下载/文件目录，下载前仍可临时更改。'
+                          : '默认保存到下载目录，任务开始前仍可临时更改。',
+                      style: TextStyle(
+                        color: dialogContext.palette.textMuted,
+                        fontSize: 12,
                       ),
                     ),
-                    if (_supportsDirectorySelection)
+                    if (_isMobile || _supportsDirectorySelection) ...[
+                      const SizedBox(height: 8),
                       Wrap(
                         spacing: 10,
                         runSpacing: 8,
@@ -647,68 +761,71 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                                 await _clearDownloadDirectory();
                                 setDialogState(() {});
                               },
-                              child: const Text('恢复每次询问'),
+                              child: const Text('清除自选目录'),
                             ),
                         ],
                       ),
-                    const SizedBox(height: 18),
-                    const Text(
-                      '高级工具服务',
-                      style: TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: apiController,
-                      keyboardType: TextInputType.url,
-                      autocorrect: false,
-                      decoration: const InputDecoration(
-                        labelText: '服务地址',
-                        hintText: 'https://resolver.example.com',
-                        prefixIcon: Icon(Icons.dns_outlined),
+                    ],
+                    if (!LocalMediaService.isSupported) ...[
+                      const SizedBox(height: 18),
+                      const Text(
+                        '高级工具服务',
+                        style: TextStyle(fontWeight: FontWeight.w800),
                       ),
-                    ),
-                    if (!kIsWeb) ...[
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 8),
                       TextField(
-                        controller: tokenController,
-                        obscureText: true,
-                        enableSuggestions: false,
+                        controller: apiController,
+                        keyboardType: TextInputType.url,
                         autocorrect: false,
                         decoration: const InputDecoration(
-                          labelText: '服务访问令牌（可选）',
-                          hintText: '至少 32 字节，仅保存在系统安全存储中',
-                          prefixIcon: Icon(Icons.key_rounded),
+                          labelText: '服务地址',
+                          hintText: 'https://resolver.example.com',
+                          prefixIcon: Icon(Icons.dns_outlined),
                         ),
                       ),
-                    ],
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '远程地址强制 HTTPS；手机和 Web 的高级工具需连接受信任服务。',
-                            style: TextStyle(
-                              color: dialogContext.palette.textMuted,
-                              fontSize: 12,
-                            ),
+                      if (!kIsWeb) ...[
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: tokenController,
+                          obscureText: true,
+                          enableSuggestions: false,
+                          autocorrect: false,
+                          decoration: const InputDecoration(
+                            labelText: '服务访问令牌（可选）',
+                            hintText: '至少 32 字节，仅保存在系统安全存储中',
+                            prefixIcon: Icon(Icons.key_rounded),
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        OutlinedButton(
-                          onPressed: () async {
-                            final error = await _saveApiBaseUrl(
-                              apiController.text,
-                              accessToken: tokenController.text,
-                            );
-                            if (!mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(error ?? '高级工具服务地址已保存')),
-                            );
-                          },
-                          child: const Text('保存'),
-                        ),
                       ],
-                    ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '远程地址强制 HTTPS；Web 和桌面高级工具仅连接受信任服务。',
+                              style: TextStyle(
+                                color: dialogContext.palette.textMuted,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          OutlinedButton(
+                            onPressed: () async {
+                              final error = await _saveApiBaseUrl(
+                                apiController.text,
+                                accessToken: tokenController.text,
+                              );
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(error ?? '高级工具服务地址已保存')),
+                              );
+                            },
+                            child: const Text('保存'),
+                          ),
+                        ],
+                      ),
+                    ],
                     const SizedBox(height: 18),
                     const Text(
                       '隐私',
@@ -757,7 +874,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                     const SizedBox(height: 12),
                     Text(
                       LocalMediaService.isSupported
-                          ? '手机本地解析器仅处理解析与下载；高级工具会按能力显示。'
+                          ? '手机上的解析、下载、音频提取、压缩、格式转换和媒体信息均按内置能力在本机完成；磁力/种子引擎暂未内置。'
                           : '高级工具需要已连接且受信任的解析服务。',
                       style: TextStyle(
                         color: dialogContext.palette.textMuted,
@@ -823,8 +940,13 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         onShowAllTasks: () => setState(() => _selectedIndex = 2),
       ),
       ParserPage(
-        key: ValueKey('parser-$_parserRevision-$_serviceConfigRevision'),
+        key: ValueKey(
+          'parser-$_parserRevision-$_serviceConfigRevision-$_saveConfigRevision',
+        ),
         initialUrl: _parserInitialUrl,
+        defaultSaveDestination: _defaultSaveDestination,
+        customSaveDestinationUri: _downloadDirectory,
+        customSaveDestinationName: _downloadDirectoryName,
         onJobChanged: _recordJob,
       ),
       DownloadsPage(
@@ -833,8 +955,11 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         onRetry: _reopenDownload,
       ),
       ToolsPage(
-        key: ValueKey('tools-$_serviceConfigRevision'),
+        key: ValueKey('tools-$_serviceConfigRevision-$_saveConfigRevision'),
         initialInput: _toolInitialInput,
+        defaultSaveDestination: _defaultSaveDestination,
+        customSaveDestinationUri: _downloadDirectory,
+        onJobChanged: _recordToolJob,
         onOpenParser: _parseManual,
       ),
     ];
@@ -929,6 +1054,72 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           ),
         );
       },
+    );
+  }
+}
+
+class UpdateAvailableDialog extends StatelessWidget {
+  const UpdateAvailableDialog({
+    super.key,
+    required this.result,
+    required this.onDismiss,
+    this.onInstall,
+  });
+
+  final UpdateCheckResult result;
+  final VoidCallback onDismiss;
+  final VoidCallback? onInstall;
+
+  @override
+  Widget build(BuildContext context) {
+    final release = result.release;
+    final hasDownload = release != null && release.url.isNotEmpty;
+    final isWindows = result.platform == 'windows';
+    final isAndroid = result.platform == 'android';
+    final isIos = result.platform == 'ios';
+    return AlertDialog(
+      scrollable: true,
+      icon: const Icon(Icons.system_update_alt_rounded, size: 34),
+      title: Text('发现新版本 ${result.manifest.version}'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 430),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              result.manifest.notes.isEmpty
+                  ? '新版本已经可以下载。'
+                  : result.manifest.notes,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              hasDownload
+                  ? (isWindows
+                        ? '安装包会在软件内下载并校验，随后自动启动安装。'
+                        : isAndroid
+                        ? 'APK 会在应用内下载并校验，随后打开 Android 系统安装确认。'
+                        : isIos
+                        ? 'iOS 不允许应用直接安装下载的 IPA，请通过 App Store、TestFlight 或原签名渠道更新。'
+                        : '将打开当前平台的安装包或发布页面。')
+                  : '已检测到新版本，但当前平台的安装包尚未发布。',
+              style: TextStyle(color: context.palette.textMuted, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: onDismiss,
+          child: Text(onInstall == null ? '知道了' : '稍后'),
+        ),
+        if (onInstall != null)
+          FilledButton.icon(
+            onPressed: onInstall,
+            icon: const Icon(Icons.download_rounded),
+            label: Text(isWindows || isAndroid ? '下载并安装' : '前往更新'),
+          ),
+      ],
     );
   }
 }

@@ -15,6 +15,8 @@ Future<SaveResult> saveDownload(
   String mediaType = 'file',
   Map<String, String> headers = const {},
   bool Function()? isCancelled,
+  String? customDestinationUri,
+  TransferProgressCallback? onTransferProgress,
 }) async {
   if (headers.isEmpty) {
     web.HTMLAnchorElement()
@@ -23,6 +25,7 @@ Future<SaveResult> saveDownload(
       ..target = '_blank'
       ..click();
     onProgress(1);
+    onTransferProgress?.call(const TransferProgress(progress: 1));
     return const SaveResult(message: '浏览器下载已开始');
   }
 
@@ -45,6 +48,10 @@ Future<SaveResult> saveDownload(
     }
     final bytes = BytesBuilder(copy: false);
     var received = 0;
+    final stopwatch = Stopwatch()..start();
+    var lastReceived = 0;
+    var lastElapsed = Duration.zero;
+    double? smoothedSpeed;
     await for (final chunk in response.stream.timeout(
       const Duration(seconds: 60),
     )) {
@@ -55,8 +62,42 @@ Future<SaveResult> saveDownload(
       }
       bytes.add(chunk);
       final total = response.contentLength;
+      final elapsed = stopwatch.elapsed;
       if (total != null && total > 0) {
-        onProgress((received / total).clamp(0, 1));
+        final value = (received / total).clamp(0, 1).toDouble();
+        onProgress(value);
+      }
+      final shouldEmit =
+          elapsed - lastElapsed >= const Duration(milliseconds: 250) ||
+          (total != null && received >= total);
+      if (shouldEmit) {
+        final intervalSeconds =
+            (elapsed - lastElapsed).inMicroseconds /
+            Duration.microsecondsPerSecond;
+        final instant = intervalSeconds > 0
+            ? (received - lastReceived) / intervalSeconds
+            : null;
+        if (instant != null) {
+          smoothedSpeed = smoothedSpeed == null
+              ? instant
+              : smoothedSpeed * 0.65 + instant * 0.35;
+        }
+        onTransferProgress?.call(
+          TransferProgress(
+            progress: total != null && total > 0
+                ? (received / total).clamp(0, 1).toDouble()
+                : 0,
+            downloadedBytes: received,
+            totalBytes: total,
+            speedBytesPerSecond: smoothedSpeed,
+            averageSpeedBytesPerSecond: elapsed.inMicroseconds <= 0
+                ? null
+                : received /
+                      (elapsed.inMicroseconds / Duration.microsecondsPerSecond),
+          ),
+        );
+        lastReceived = received;
+        lastElapsed = elapsed;
       }
     }
     final blob = web.Blob(
@@ -74,6 +115,13 @@ Future<SaveResult> saveDownload(
       web.URL.revokeObjectURL(objectUrl);
     }
     onProgress(1);
+    onTransferProgress?.call(
+      TransferProgress(
+        progress: 1,
+        downloadedBytes: received,
+        totalBytes: response.contentLength ?? received,
+      ),
+    );
     return const SaveResult(message: '浏览器下载已开始');
   } finally {
     client.close();
