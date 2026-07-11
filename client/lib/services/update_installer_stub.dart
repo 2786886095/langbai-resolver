@@ -1,6 +1,6 @@
 import 'update_models.dart';
 
-Future<void> installUpdate(
+Future<String> installUpdate(
   UpdatePlatformRelease release, {
   required String version,
   void Function(double progress)? onProgress,

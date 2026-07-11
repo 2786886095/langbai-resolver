@@ -14,6 +14,8 @@ Future<SaveResult> saveDownload(
   String mediaType = 'file',
   Map<String, String> headers = const {},
   bool Function()? isCancelled,
+  String? customDestinationUri,
+  TransferProgressCallback? onTransferProgress,
 }) {
   return implementation.saveDownload(
     uri,
@@ -23,5 +25,7 @@ Future<SaveResult> saveDownload(
     mediaType: mediaType,
     headers: headers,
     isCancelled: isCancelled,
+    customDestinationUri: customDestinationUri,
+    onTransferProgress: onTransferProgress,
   );
 }

@@ -8,6 +8,8 @@ Future<SaveResult> saveDownload(
   String mediaType = 'file',
   Map<String, String> headers = const {},
   bool Function()? isCancelled,
+  String? customDestinationUri,
+  TransferProgressCallback? onTransferProgress,
 }) {
   throw UnsupportedError('当前平台暂不支持文件保存');
 }

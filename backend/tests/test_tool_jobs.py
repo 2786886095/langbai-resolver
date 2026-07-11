@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from app.config import Settings
-from app.models import AssetKind, JobState, MediaOption
+from app.models import AssetKind, DownloadJob, JobState, MediaOption
 from app.services.extractor import DownloadSpec, ResolverService
 from app.services.jobs import (
     JobCancelledError,
@@ -332,6 +332,146 @@ def test_direct_download_falls_back_to_sequential_get_when_ranges_are_broken(
         jobs.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_direct_download_uses_explicit_compatibility_url(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    @asynccontextmanager
+    async def fake_stream(_client, method, url, **_kwargs):
+        calls.append((method, url))
+        if "clean.example" in url:
+            if method == "HEAD":
+                yield httpx.Response(
+                    200,
+                    headers={"content-length": "32"},
+                    request=httpx.Request(method, url),
+                )
+            else:
+                yield httpx.Response(
+                    200,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                    content=b"<html>temporary risk control</html>",
+                    request=httpx.Request(method, url),
+                )
+        elif "empty.example" in url:
+            yield httpx.Response(
+                200,
+                content=b"",
+                request=httpx.Request(method, url),
+            )
+        elif method == "HEAD":
+            yield httpx.Response(
+                200,
+                headers={"content-length": "8"},
+                request=httpx.Request(method, url),
+            )
+        else:
+            yield httpx.Response(
+                200,
+                headers={"content-length": "8"},
+                content=b"fallback",
+                request=httpx.Request(method, url),
+            )
+
+    monkeypatch.setattr("app.services.jobs.stream_public_response_async", fake_stream)
+
+    async def scenario() -> None:
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            download_dir=tmp_path / "downloads",
+            cache_ttl_seconds=3600,
+            job_ttl_seconds=3600,
+            max_concurrent_jobs=1,
+            cors_origins=("http://localhost",),
+            ffmpeg_location=None,
+            allow_fake_ip_dns=False,
+        )
+        jobs = JobManager(settings, ResolverService(settings))
+        option = MediaOption(
+            id="video:douyin-share",
+            kind=AssetKind.VIDEO,
+            label="Clean first",
+            extension="mp4",
+        )
+        spec = DownloadSpec(
+            option=option,
+            direct_url="https://clean.example/video.mp4",
+            fallback_urls=(
+                "https://empty.example/video.mp4",
+                "https://watermark.example/video.mp4",
+            ),
+        )
+        job_dir = settings.download_dir / "compatibility-job"
+        job_dir.mkdir(parents=True)
+        result = await jobs._download_direct(
+            "compatibility-job", "sample", spec, job_dir
+        )
+        assert result.read_bytes() == b"fallback"
+        assert calls == [
+            ("HEAD", "https://clean.example/video.mp4"),
+            ("GET", "https://clean.example/video.mp4"),
+            ("HEAD", "https://empty.example/video.mp4"),
+            ("GET", "https://empty.example/video.mp4"),
+            ("HEAD", "https://watermark.example/video.mp4"),
+            ("GET", "https://watermark.example/video.mp4"),
+        ]
+        jobs.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_direct_progress_calculates_speed_and_eta(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        host="127.0.0.1",
+        port=8787,
+        download_dir=tmp_path / "downloads",
+        cache_ttl_seconds=3600,
+        job_ttl_seconds=3600,
+        max_concurrent_jobs=1,
+        cors_origins=("http://localhost",),
+        ffmpeg_location=None,
+        allow_fake_ip_dns=False,
+    )
+    jobs = JobManager(settings, ResolverService(settings))
+    now = 1000.0
+    jobs._jobs["speed-job"] = DownloadJob(
+        id="speed-job",
+        media_id="media-speed",
+        option_id="video:test",
+        state=JobState.RUNNING,
+        created_at=now,
+        updated_at=now,
+    )
+    samples = iter((10.0, 12.0, 13.0, 15.0))
+    monkeypatch.setattr(
+        "app.services.jobs.time.monotonic", lambda: next(samples)
+    )
+
+    jobs._update_progress("speed-job", 0, 10_240, None, None)
+    jobs._update_progress("speed-job", 2_048, 10_240, None, None)
+    job = jobs.get("speed-job")
+
+    assert job is not None
+    assert job.speed_bytes_per_second == pytest.approx(1_024)
+    assert job.eta_seconds == 8
+    assert job.progress == pytest.approx(0.2)
+
+    jobs._update_progress("speed-job", 0, 10_240, None, None)
+    restarted = jobs.get("speed-job")
+    assert restarted is not None
+    assert restarted.speed_bytes_per_second is None
+    assert restarted.eta_seconds is None
+
+    jobs._update_progress("speed-job", 1_024, 10_240, None, None)
+    resumed = jobs.get("speed-job")
+    assert resumed is not None
+    assert resumed.speed_bytes_per_second == pytest.approx(512)
+    assert resumed.eta_seconds == 18
+    jobs.shutdown()
 
 
 def test_ytdlp_worker_forces_native_hls_and_rejects_live_streams(

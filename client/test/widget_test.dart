@@ -97,10 +97,25 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.0.9 · 按当前平台检查'), findsOneWidget);
-    expect(find.text('默认保存路径'), findsOneWidget);
+    expect(find.text('当前版本 1.1.0 · 按当前平台检查'), findsOneWidget);
+    expect(find.text('默认保存位置'), findsOneWidget);
     expect(find.text('识别剪贴板链接'), findsOneWidget);
-    expect(find.text('高级工具服务'), findsOneWidget);
+    expect(find.text('高级工具服务'), findsNothing);
+  });
+
+  testWidgets('persists the default mobile save destination', (tester) async {
+    await tester.pumpWidget(const LangbaiResolverApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('设置'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件 / 下载目录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('系统相册（视频和图片）').last);
+    await tester.pumpAndSettle();
+
+    final preferences = await SharedPreferences.getInstance();
+    expect(preferences.getString('default_save_destination'), 'gallery');
   });
 
   testWidgets('shows the GitHub repository in about', (tester) async {
@@ -131,7 +146,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '周杰伦');
 
-    await tester.tap(find.text('多线路直链下载').first);
+    await tester.tap(find.text('公开直链下载').first);
     await tester.pumpAndSettle();
     final directField = tester.widget<TextField>(find.byType(TextField));
     expect(directField.controller!.text, isEmpty);

@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 import yt_dlp
@@ -49,6 +49,10 @@ _DOUYIN_MOBILE_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
     "AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
 )
+_DOUYIN_PLAY_HOSTS = {"aweme.snssdk.com"}
+_DOUYIN_PLAYWM_PATH = "/aweme/v1/playwm/"
+_DOUYIN_PLAY_PATH = "/aweme/v1/play/"
+_DOUYIN_VIDEO_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{8,256}$")
 _KUAISHOU_HOSTS = {
     "kuaishou.com",
     "chenzhongtech.com",
@@ -159,6 +163,7 @@ class DownloadSpec:
     option: MediaOption
     selector: str | None = None
     direct_url: str | None = None
+    fallback_urls: tuple[str, ...] = ()
     preferred_codec: str | None = None
     preferred_quality: str | None = None
     cookie_header: str | None = None
@@ -190,11 +195,88 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def _select_douyin_play_urls(play_addr: object) -> tuple[str | None, tuple[str, ...]]:
+    """Prefer Douyin's public clean endpoint and retain explicit compatibility URLs."""
+    if not isinstance(play_addr, dict):
+        return None, ()
+    raw_urls = play_addr.get("url_list")
+    if not isinstance(raw_urls, list):
+        raw_urls = []
+    urls = list(
+        dict.fromkeys(
+            str(value)
+            for value in raw_urls
+            if str(value).startswith(("http://", "https://"))
+        )
+    )
+    if not urls:
+        return None, ()
+
+    watermark_urls: list[str] = []
+    for candidate in urls:
+        parsed = urlparse(candidate)
+        if parsed.path.rstrip("/") != _DOUYIN_PLAYWM_PATH.rstrip("/"):
+            return candidate, tuple(url for url in urls if url != candidate)
+        watermark_urls.append(candidate)
+
+    fallback_token = str(play_addr.get("uri") or "").strip()
+    for candidate in watermark_urls:
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or (parsed.hostname or "").lower() not in _DOUYIN_PLAY_HOSTS
+        ):
+            continue
+        query = parse_qs(parsed.query)
+        video_token = str((query.get("video_id") or [fallback_token])[0]).strip()
+        if not _DOUYIN_VIDEO_TOKEN_RE.fullmatch(video_token):
+            continue
+        ratio = str((query.get("ratio") or ["720p"])[0]).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", ratio):
+            ratio = "720p"
+        clean_query = {"video_id": video_token, "ratio": ratio}
+        line = str((query.get("line") or [""])[0]).strip()
+        if re.fullmatch(r"\d{1,3}", line):
+            clean_query["line"] = line
+        clean_url = (
+            f"https://aweme.snssdk.com{_DOUYIN_PLAY_PATH}?"
+            f"{urlencode(clean_query)}"
+        )
+        return clean_url, tuple(watermark_urls)
+    return watermark_urls[0], tuple(watermark_urls[1:])
+
+
 def _as_float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _format_has_video(item: dict[str, Any]) -> bool:
+    """Treat missing codec metadata as unknown, not as an explicit audio-only flag."""
+    codec = str(item.get("vcodec") or "").strip().lower()
+    if codec == "none":
+        return False
+    if codec:
+        return True
+    if _as_int(item.get("width")) or _as_int(item.get("height")):
+        return True
+    video_extension = str(item.get("video_ext") or "").strip().lower()
+    if video_extension and video_extension != "none":
+        return True
+    resolution = str(item.get("resolution") or "").strip().lower()
+    return bool(resolution and resolution not in {"audio only", "unknown"})
+
+
+def _format_audio_state(item: dict[str, Any]) -> bool | None:
+    """Return explicit audio presence while preserving missing codec as unknown."""
+    codec = str(item.get("acodec") or "").strip().lower()
+    if codec == "none":
+        return False
+    if codec:
+        return True
+    return None
 
 
 def _direct_headers(
@@ -429,6 +511,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label="最高质量封面" if label == "cover" else f"图片 {label}",
                 extension=extension,
+                preview_url=image_url,
             )
             specs[option.id] = DownloadSpec(option=option, direct_url=image_url)
             options.append(option)
@@ -557,9 +640,8 @@ class ResolverService:
         media_id = uuid.uuid4().hex
         specs: dict[str, DownloadSpec] = {}
         video = item.get("video") if isinstance(item.get("video"), dict) else {}
-        play_urls = (video.get("play_addr") or {}).get("url_list") or []
-        play_url = next(
-            (str(value) for value in play_urls if str(value).startswith("http")), None
+        play_url, fallback_play_urls = _select_douyin_play_urls(
+            video.get("play_addr")
         )
         width = _as_int(video.get("width"))
         height = _as_int(video.get("height"))
@@ -575,11 +657,19 @@ class ResolverService:
             option = MediaOption(
                 id="video:douyin-share",
                 kind=AssetKind.VIDEO,
-                label="抖音公开视频 · MP4",
+                label=(
+                    "抖音公开视频 · 无平台水印优先（失败时使用原站兼容源）"
+                    if fallback_play_urls
+                    else "抖音公开视频 · MP4"
+                ),
                 extension="mp4",
                 resolution=resolution,
             )
-            specs[option.id] = DownloadSpec(option=option, direct_url=play_url)
+            specs[option.id] = DownloadSpec(
+                option=option,
+                direct_url=play_url,
+                fallback_urls=fallback_play_urls,
+            )
 
         image_sources: list[tuple[str, str]] = []
         cover_urls = (video.get("cover") or {}).get("url_list") or []
@@ -606,6 +696,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label="最高质量封面" if label == "cover" else f"图片 {label}",
                 extension=extension,
+                preview_url=image_url,
             )
             specs[option.id] = DownloadSpec(option=option, direct_url=image_url)
         if not specs:
@@ -652,6 +743,7 @@ class ResolverService:
             kind=kind,
             label=label,
             extension=extension,
+            preview_url=url if kind == AssetKind.IMAGE else None,
         )
         title = path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or "直接媒体"
         spec = DownloadSpec(option=option, direct_url=url)
@@ -732,16 +824,31 @@ class ResolverService:
         media_id = uuid.uuid4().hex
         specs: dict[str, DownloadSpec] = {}
         video_candidates: dict[tuple[Any, ...], dict[str, Any]] = {}
+        audio_formats = [
+            item
+            for item in formats
+            if _format_audio_state(item) is True and not _format_has_video(item)
+        ]
+        has_separate_audio = bool(audio_formats)
+
+        def format_has_audio(item: dict[str, Any]) -> bool:
+            state = _format_audio_state(item)
+            if state is not None:
+                return state
+            # Some extractors omit both codec fields for a muxed public MP4/HLS.
+            # If they also expose a dedicated audio-only stream, keep unknown
+            # video formats mergeable instead of silently producing no audio.
+            return _format_has_video(item) and not has_separate_audio
 
         for item in formats:
-            if not item.get("format_id") or item.get("vcodec") in {None, "none"}:
+            if not item.get("format_id") or not _format_has_video(item):
                 continue
             height = _as_int(item.get("height"))
             width = _as_int(item.get("width"))
             fps = _as_float(item.get("fps"))
             extension = str(item.get("ext") or "mp4").lower()
             video_codec = str(item.get("vcodec") or "unknown").lower()
-            has_audio = item.get("acodec") not in {None, "none"}
+            has_audio = format_has_audio(item)
             dynamic_range = str(item.get("dynamic_range") or "SDR")
             key = (
                 height,
@@ -786,7 +893,7 @@ class ResolverService:
             fps = _as_float(item.get("fps"))
             extension = str(item.get("ext") or "mp4").lower()
             video_codec = str(item.get("vcodec") or "unknown").split(".", 1)[0].upper()
-            has_audio = item.get("acodec") not in {None, "none"}
+            has_audio = format_has_audio(item)
             size = _as_int(item.get("filesize") or item.get("filesize_approx"))
             resolution = (
                 f"{width}×{height}"
@@ -842,6 +949,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label=f"原始图片 · {direct_extension.upper()}",
                 extension=direct_extension,
+                preview_url=str(direct_url),
             )
             specs[option.id] = DownloadSpec(
                 option=option,
@@ -879,6 +987,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label=f"图集图片 {index} · {item_extension.upper()}",
                 extension=item_extension,
+                preview_url=str(item_url),
             )
             specs[option.id] = DownloadSpec(
                 option=option,
@@ -891,20 +1000,14 @@ class ResolverService:
                 ),
             )
 
-        has_audio = any(
-            item.get("acodec") not in {None, "none"} for item in formats
+        has_audio = bool(audio_formats) or any(
+            format_has_audio(item) for item in formats
         ) or (
             bool(direct_url)
             and direct_extension not in image_extensions
-            and info.get("acodec") != "none"
+            and str(info.get("acodec") or "").lower() != "none"
         )
         if has_audio:
-            audio_formats = [
-                item
-                for item in formats
-                if item.get("acodec") not in {None, "none"}
-                and item.get("vcodec") in {None, "none"}
-            ]
             best_audio_format = max(
                 audio_formats,
                 key=lambda item: (
@@ -914,17 +1017,23 @@ class ResolverService:
                 default=info,
             )
             best_audio_extension = str(best_audio_format.get("ext") or "m4a").lower()
-            audio_presets = (
+            audio_presets = []
+            if audio_formats:
+                audio_presets.append(
+                    (
+                        "audio:best",
+                        f"最佳原始音频 · {best_audio_extension.upper()}",
+                        best_audio_extension,
+                        None,
+                        None,
+                    )
+                )
+            audio_presets.extend(
                 (
-                    "audio:best",
-                    f"最佳原始音频 · {best_audio_extension.upper()}",
-                    best_audio_extension,
-                    None,
-                    None,
-                ),
-                ("audio:mp3:320", "MP3 · 320 kbps", "mp3", "mp3", "320"),
-                ("audio:mp3:192", "MP3 · 192 kbps", "mp3", "mp3", "192"),
-                ("audio:m4a:256", "M4A · 256 kbps", "m4a", "m4a", "256"),
+                    ("audio:mp3:320", "MP3 · 320 kbps", "mp3", "mp3", "320"),
+                    ("audio:mp3:192", "MP3 · 192 kbps", "mp3", "mp3", "192"),
+                    ("audio:m4a:256", "M4A · 256 kbps", "m4a", "m4a", "256"),
+                )
             )
             for option_id, label, extension, codec, quality in audio_presets:
                 bitrate = _as_int(quality)
@@ -965,6 +1074,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label=f"最高质量封面 · {extension.upper()}",
                 extension=extension,
+                preview_url=str(thumbnail),
             )
             specs[cover.id] = DownloadSpec(
                 option=cover,
@@ -1127,6 +1237,7 @@ class ResolverService:
                 kind=AssetKind.IMAGE,
                 label=f"图片 {index} · {extension.upper()}",
                 extension=extension,
+                preview_url=image_url,
             )
             specs[option.id] = DownloadSpec(
                 option=option,

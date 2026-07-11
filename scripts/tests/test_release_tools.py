@@ -106,6 +106,32 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("android", manifest["platforms"])
         self.assertIn("ios", manifest["platforms"])
 
+    def test_android_abi_variants_are_exposed_with_universal_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            (assets / "langbai-resolver-Android.apk").write_bytes(b"universal")
+            (assets / "langbai-resolver-Android-arm64.apk").write_bytes(b"arm64")
+            (assets / "langbai-resolver-Android-armv7.apk").write_bytes(b"armv7")
+            (assets / "langbai-resolver-Android-x86_64.apk").write_bytes(b"x86")
+            manifest = manifest_tool.build_manifest(
+                version="1.1.0",
+                repository="owner/repo",
+                notes="",
+                assets=assets,
+            )
+
+        platforms = manifest["platforms"]
+        self.assertEqual(
+            set(platforms),
+            {"android", "android-arm64", "android-armv7", "android-x86_64"},
+        )
+        self.assertTrue(platforms["android"]["url"].endswith("Android.apk"))
+        self.assertTrue(
+            platforms["android-arm64"]["url"].endswith("Android-arm64.apk")
+        )
+        self.assertEqual(platforms["android-arm64"]["size_bytes"], 5)
+        self.assertRegex(platforms["android-arm64"]["sha256"], r"^[0-9a-f]{64}$")
+
     def test_incomplete_windows_release_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             assets = Path(temp)

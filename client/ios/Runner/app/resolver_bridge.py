@@ -7,6 +7,7 @@ import os
 import re
 import ssl
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -15,6 +16,12 @@ from typing import Any
 
 import certifi
 import yt_dlp
+
+from media_url_utils import (
+    is_obvious_text_media_error,
+    normalize_douyin_play_url,
+    should_expose_douyin_video,
+)
 
 
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -192,6 +199,7 @@ def _option(
     fps: float | None = None,
     filesize: int | None = None,
     requires_merge: bool = False,
+    preview_url: str | None = None,
 ) -> dict[str, object]:
     return {
         "id": option_id,
@@ -204,6 +212,7 @@ def _option(
         "filesize": filesize,
         "filesize_label": _human_bytes(filesize),
         "requires_merge": requires_merge,
+        "preview_url": preview_url,
     }
 
 
@@ -237,6 +246,10 @@ def _write_progress(
     status: str,
     *,
     eta_seconds: int | None = None,
+    downloaded_bytes: int | None = None,
+    total_bytes: int | None = None,
+    speed_bytes_per_second: float | None = None,
+    average_speed_bytes_per_second: float | None = None,
 ) -> None:
     if not progress_path:
         return
@@ -244,6 +257,10 @@ def _write_progress(
         "progress": max(0.0, min(100.0, progress)),
         "status": status,
         "eta_seconds": eta_seconds,
+        "downloaded_bytes": downloaded_bytes,
+        "total_bytes": total_bytes,
+        "speed_bytes_per_second": speed_bytes_per_second,
+        "average_speed_bytes_per_second": average_speed_bytes_per_second,
     }
     temporary = progress_path.with_suffix(progress_path.suffix + ".tmp")
     try:
@@ -278,6 +295,14 @@ def _progress_hook(
             offset + raw_progress * scale,
             "正在下载" if status == "downloading" else "正在处理",
             eta_seconds=_integer(value.get("eta")),
+            downloaded_bytes=int(downloaded) if downloaded else None,
+            total_bytes=int(total) if total else None,
+            speed_bytes_per_second=_number(value.get("speed")),
+            average_speed_bytes_per_second=(
+                downloaded / elapsed
+                if (elapsed := _number(value.get("elapsed")))
+                else None
+            ),
         )
 
     return hook
@@ -428,6 +453,7 @@ def _resolve_kuaishou_share(url: str) -> dict[str, Any]:
         )
 
     image_urls: list[str] = []
+    post_image_urls: list[str] = []
     cover_url = _first_kuaishou_url(photo.get("coverUrls"))
     if cover_url:
         image_urls.append(cover_url)
@@ -441,12 +467,23 @@ def _resolve_kuaishou_share(url: str) -> dict[str, Any]:
             )
             if not image_url and isinstance(item, dict):
                 image_url = _first_kuaishou_url([item])
-            if image_url and image_url not in image_urls:
-                image_urls.append(image_url)
+            if image_url:
+                if image_url not in image_urls:
+                    image_urls.append(image_url)
+                if image_url not in post_image_urls:
+                    post_image_urls.append(image_url)
             if len(image_urls) >= 40:
                 break
+    if post_image_urls:
+        specs = {
+            option_id: spec
+            for option_id, spec in specs.items()
+            if spec.get("kind") != "video"
+        }
+        options = [option for option in options if option.get("kind") != "video"]
+        image_urls = post_image_urls
     for index, image_url in enumerate(image_urls, start=1):
-        is_cover = image_url == cover_url
+        is_cover = not post_image_urls and image_url == cover_url
         option_id = "image:cover" if is_cover else f"image:{index}"
         extension = (
             Path(urllib.parse.urlparse(image_url).path).suffix.lstrip(".").lower()
@@ -464,6 +501,7 @@ def _resolve_kuaishou_share(url: str) -> dict[str, Any]:
                 "image",
                 "最高质量封面" if is_cover else f"图片 {index}",
                 extension,
+                preview_url=image_url,
             )
         )
     if not options:
@@ -570,10 +608,16 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
     specs: dict[str, dict[str, Any]] = {}
     options: list[dict[str, object]] = []
     video = item.get("video") if isinstance(item.get("video"), dict) else {}
-    play_url = _first_http_url((video.get("play_addr") or {}).get("url_list"))
+    images = [value for value in (item.get("images") or []) if isinstance(value, dict)]
+    original_play_url = _first_http_url(
+        (video.get("play_addr") or {}).get("url_list")
+    )
+    play_url = (
+        normalize_douyin_play_url(original_play_url) if original_play_url else None
+    )
     width = _integer(video.get("width"))
     height = _integer(video.get("height"))
-    if play_url:
+    if should_expose_douyin_video(play_url, len(images)):
         resolution = (
             urllib.parse.parse_qs(urllib.parse.urlparse(play_url).query).get(
                 "ratio", [None]
@@ -582,13 +626,16 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
         specs["video:douyin-share"] = {
             "kind": "video",
             "direct_url": play_url,
+            "fallback_url": (
+                original_play_url if original_play_url != play_url else None
+            ),
             "extension": "mp4",
         }
         options.append(
             _option(
                 "video:douyin-share",
                 "video",
-                "抖音公开视频 · MP4",
+                "抖音公开视频 · MP4 · 无平台水印优先，失败时使用原站兼容源",
                 "mp4",
                 resolution=resolution,
             )
@@ -596,11 +643,9 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
 
     cover_url = _first_http_url((video.get("cover") or {}).get("url_list"))
     image_sources: list[tuple[str, str]] = []
-    if cover_url:
+    if cover_url and not images:
         image_sources.append(("cover", cover_url))
-    for index, image in enumerate(item.get("images") or [], start=1):
-        if not isinstance(image, dict):
-            continue
+    for index, image in enumerate(images, start=1):
         image_url = _first_http_url(
             image.get("url_list") or image.get("download_url_list")
         )
@@ -624,6 +669,7 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
                 "image",
                 "最高质量封面" if label == "cover" else f"图片 {label}",
                 extension,
+                preview_url=image_url,
             )
         )
     if not options:
@@ -646,7 +692,12 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
         "thumbnail_url": cover_url,
         "options": options,
         "warnings": [
-            "不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"
+            "不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。",
+            *(
+                ["无平台水印优先，失败时使用原站兼容源。"]
+                if original_play_url != play_url and not images
+                else []
+            ),
         ],
     }
 
@@ -803,13 +854,22 @@ def resolve(argument: str) -> str:
                 "image",
                 f"图集图片 {image_index} · {extension.upper()}",
                 extension,
+                preview_url=direct_url,
             )
         )
         if image_index >= 40:
             break
 
+    if image_index:
+        specs = {
+            option_id: spec
+            for option_id, spec in specs.items()
+            if spec.get("kind") == "image"
+        }
+        options = [option for option in options if option.get("kind") == "image"]
+
     thumbnail = _text(root.get("thumbnail") or raw.get("thumbnail"))
-    if thumbnail:
+    if thumbnail and not image_index:
         extension = (
             Path(urllib.parse.urlparse(thumbnail).path).suffix.lstrip(".").lower()
         )
@@ -827,6 +887,7 @@ def resolve(argument: str) -> str:
                 "image",
                 f"最高质量封面 · {extension.upper()}",
                 extension,
+                preview_url=thumbnail,
             )
         )
 
@@ -850,7 +911,13 @@ def resolve(argument: str) -> str:
                 "headers": _safe_http_headers(root.get("http_headers")),
             }
             options.append(
-                _option(option_id, kind, f"原始媒体 · {extension.upper()}", extension)
+                _option(
+                    option_id,
+                    kind,
+                    f"原始媒体 · {extension.upper()}",
+                    extension,
+                    preview_url=direct_url if kind == "image" else None,
+                )
             )
 
     if not options:
@@ -895,6 +962,106 @@ def resolve(argument: str) -> str:
     )
 
 
+def _download_direct_media(
+    *,
+    spec: dict[str, Any],
+    media: dict[str, Any],
+    output_dir: Path,
+    progress_path: Path | None,
+    cancel_path: Path | None,
+) -> Path:
+    direct_url = str(spec["direct_url"])
+    candidates = [direct_url]
+    fallback_url = _text(spec.get("fallback_url"))
+    if fallback_url and fallback_url not in candidates:
+        candidates.append(fallback_url)
+    parsed_extension = Path(urllib.parse.urlparse(direct_url).path).suffix
+    extension = _text(spec.get("extension"))
+    suffix = f".{extension.lstrip('.')}" if extension else parsed_extension or ".bin"
+    filename = _safe_filename(str(media["title"])) + suffix
+    target = _unique_path(output_dir / filename)
+    partial = target.with_suffix(target.suffix + ".part")
+    last_error: Exception | None = None
+
+    for index, candidate in enumerate(candidates):
+        headers = {
+            "User-Agent": _USER_AGENT,
+            **_safe_http_headers(spec.get("headers")),
+        }
+        cookie_header = _text(media.get("bilibili_cookie"))
+        if cookie_header and _may_send_bilibili_cookie(
+            str(media.get("source_url") or ""), candidate
+        ):
+            headers["Cookie"] = cookie_header
+        if index:
+            _write_progress(
+                progress_path,
+                0.0,
+                "无水印源不可用，正在使用原站兼容源",
+            )
+        try:
+            opener = urllib.request.build_opener(
+                _SensitiveHeaderRedirectHandler(str(media.get("source_url") or "")),
+                urllib.request.HTTPSHandler(context=_SSL_CONTEXT),
+            )
+            with (
+                opener.open(
+                    urllib.request.Request(candidate, headers=headers),
+                    timeout=45,
+                ) as source,
+                partial.open("wb") as destination,
+            ):
+                total = _integer(source.headers.get("Content-Length"))
+                if total and total > _MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError("文件超过 8 GB 安全上限")
+                downloaded = 0
+                started_at = time.monotonic()
+                last_at = started_at
+                last_bytes = 0
+                chunk = source.read(64 * 1024)
+                if is_obvious_text_media_error(
+                    source.headers.get("Content-Type"), chunk
+                ):
+                    raise RuntimeError("媒体源返回了文本错误页或播放清单")
+                while chunk:
+                    _check_cancelled(cancel_path)
+                    destination.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded > _MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError("文件超过 8 GB 安全上限")
+                    now = time.monotonic()
+                    sample = now - last_at
+                    elapsed = now - started_at
+                    _write_progress(
+                        progress_path,
+                        downloaded * 100.0 / total if total else 0.0,
+                        "正在下载",
+                        downloaded_bytes=downloaded,
+                        total_bytes=total,
+                        speed_bytes_per_second=(
+                            (downloaded - last_bytes) / sample if sample > 0 else None
+                        ),
+                        average_speed_bytes_per_second=(
+                            downloaded / elapsed if elapsed > 0 else None
+                        ),
+                    )
+                    last_at = now
+                    last_bytes = downloaded
+                    chunk = source.read(64 * 1024)
+                if downloaded <= 0:
+                    raise RuntimeError("媒体源返回空响应")
+            partial.replace(target)
+            return target
+        except Exception as error:
+            last_error = error
+            with contextlib.suppress(OSError):
+                partial.unlink()
+            with contextlib.suppress(OSError):
+                target.unlink()
+            _check_cancelled(cancel_path)
+    raise last_error or RuntimeError("媒体下载失败")
+
+
 def download(argument: str) -> str:
     request = json.loads(argument)
     media_id = str(request.get("media_id") or "")
@@ -924,60 +1091,13 @@ def download(argument: str) -> str:
     try:
         _check_cancelled(cancel_path)
         if direct_url:
-            parsed_extension = Path(urllib.parse.urlparse(direct_url).path).suffix
-            extension = _text(spec.get("extension"))
-            suffix = (
-                f".{extension.lstrip('.')}" if extension else parsed_extension or ".bin"
+            result_path = _download_direct_media(
+                spec=spec,
+                media=media,
+                output_dir=output_dir,
+                progress_path=progress_path,
+                cancel_path=cancel_path,
             )
-            filename = _safe_filename(str(media["title"])) + suffix
-            target = _unique_path(output_dir / filename)
-            partial = target.with_suffix(target.suffix + ".part")
-            headers = {
-                "User-Agent": _USER_AGENT,
-                **_safe_http_headers(spec.get("headers")),
-            }
-            if cookie_header and _may_send_bilibili_cookie(
-                str(media.get("source_url") or ""), str(direct_url)
-            ):
-                headers["Cookie"] = cookie_header
-            try:
-                opener = urllib.request.build_opener(
-                    _SensitiveHeaderRedirectHandler(str(media.get("source_url") or "")),
-                    urllib.request.HTTPSHandler(context=_SSL_CONTEXT),
-                )
-                with (
-                    opener.open(
-                        urllib.request.Request(str(direct_url), headers=headers),
-                        timeout=45,
-                    ) as source,
-                    partial.open("wb") as destination,
-                ):
-                    total = _integer(source.headers.get("Content-Length"))
-                    if total and total > _MAX_DOWNLOAD_BYTES:
-                        raise RuntimeError("文件超过 8 GB 安全上限")
-                    downloaded = 0
-                    while True:
-                        _check_cancelled(cancel_path)
-                        chunk = source.read(64 * 1024)
-                        if not chunk:
-                            break
-                        destination.write(chunk)
-                        downloaded += len(chunk)
-                        if downloaded > _MAX_DOWNLOAD_BYTES:
-                            raise RuntimeError("文件超过 8 GB 安全上限")
-                        _write_progress(
-                            progress_path,
-                            downloaded * 100.0 / total if total else 0.0,
-                            "正在下载",
-                        )
-                partial.replace(target)
-            except Exception:
-                with contextlib.suppress(OSError):
-                    partial.unlink()
-                with contextlib.suppress(OSError):
-                    target.unlink()
-                raise
-            result_path = target
         else:
             with _temporary_bilibili_cookie_file(cookie_header) as cookie_file:
                 options = _base_options(cookie_file)

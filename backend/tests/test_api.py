@@ -7,7 +7,9 @@ from app.config import settings
 from app.main import app
 from app.services.extractor import (
     ResolverService,
+    SafeYoutubeDL,
     _clean_bilibili_cookie,
+    _select_douyin_play_urls,
     browser_cookies_required,
     clean_ytdlp_error,
     extract_http_url,
@@ -144,7 +146,7 @@ def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.0.9"
+    assert payload["version"] == "1.1.0"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
     assert "size_bytes" in payload["platforms"]["windows"]
     assert "signing_certificate_sha256" in payload["platforms"]["windows"]
@@ -231,7 +233,79 @@ def test_douyin_share_parser_does_not_send_cookies(monkeypatch) -> None:
     assert entry.media.duration_seconds == 18
     assert {option.kind.value for option in entry.media.options} == {"video", "image"}
     assert entry.media.options[0].resolution == "720p"
+    assert entry.media.options[1].preview_url == "https://media.example/cover.webp"
     assert "不读取或上传你的登录 Cookie" in entry.media.warnings[0]
+
+
+def test_douyin_playwm_is_normalized_to_public_clean_endpoint() -> None:
+    clean, fallbacks = _select_douyin_play_urls(
+        {
+            "uri": "v0200fg10000exampletoken",
+            "url_list": [
+                "https://aweme.snssdk.com/aweme/v1/playwm/"
+                "?video_id=v0200fg10000exampletoken&ratio=720p&line=0"
+                "&logo_name=aweme"
+            ],
+        }
+    )
+    assert clean == (
+        "https://aweme.snssdk.com/aweme/v1/play/"
+        "?video_id=v0200fg10000exampletoken&ratio=720p&line=0"
+    )
+    assert len(fallbacks) == 1
+    assert "/playwm/" in fallbacks[0]
+
+
+def test_douyin_playwm_on_untrusted_host_is_not_rewritten() -> None:
+    original = (
+        "https://media.example/aweme/v1/playwm/"
+        "?video_id=v0200fg10000exampletoken&ratio=720p"
+    )
+    selected, fallbacks = _select_douyin_play_urls({"url_list": [original]})
+    assert selected == original
+    assert fallbacks == ()
+
+
+def test_douyin_image_post_only_returns_real_images(monkeypatch) -> None:
+    video_id = "7658650507234212965"
+    router_data = {
+        "loaderData": {
+            "note_(id)/page": {
+                "videoInfoRes": {
+                    "item_list": [
+                        {
+                            "aweme_id": video_id,
+                            "desc": "纯图片作品",
+                            "author": {"nickname": "浪白"},
+                            "video": {},
+                            "images": [
+                                {"url_list": ["https://media.example/1.webp"]},
+                                {"url_list": ["https://media.example/2.webp"]},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    html = (
+        "<html><script>window._ROUTER_DATA = "
+        + json.dumps(router_data)
+        + ";</script></html>"
+    )
+    monkeypatch.setattr(
+        ResolverService,
+        "_fetch_douyin_page",
+        lambda _service, request_url: (request_url, html),
+    )
+    entry = ResolverService(settings)._resolve_douyin_share(
+        f"https://www.douyin.com/note/{video_id}"
+    )
+    assert {option.kind.value for option in entry.media.options} == {"image"}
+    assert [option.preview_url for option in entry.media.options] == [
+        "https://media.example/1.webp",
+        "https://media.example/2.webp",
+    ]
 
 
 def test_kuaishou_share_parser_uses_embedded_public_media(monkeypatch) -> None:
@@ -273,4 +347,88 @@ def test_kuaishou_share_parser_uses_embedded_public_media(monkeypatch) -> None:
     assert entry.media.duration_seconds == 210
     assert {option.kind.value for option in entry.media.options} == {"video", "image"}
     assert entry.media.options[0].resolution == "1280x720"
+    assert entry.media.options[1].preview_url == (
+        "https://media.example/kuaishou-cover.jpg"
+    )
     assert "不读取或上传你的登录 Cookie" in entry.media.warnings[0]
+
+
+def test_ytdlp_missing_codec_metadata_keeps_dimensioned_video(monkeypatch) -> None:
+    info = {
+        "id": "clip-1",
+        "title": "公开视频片段",
+        "webpage_url": "https://clips.example/watch/clip-1",
+        "extractor_key": "ExampleClips",
+        "ext": "mp4",
+        "url": "https://media.example/clip.mp4",
+        "formats": [
+            {
+                "format_id": "1080",
+                "url": "https://media.example/clip.mp4",
+                "ext": "mp4",
+                "protocol": "https",
+                "height": 1080,
+                "vcodec": None,
+                "acodec": None,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        SafeYoutubeDL,
+        "extract_info",
+        lambda _ydl, _url, download=False: info,
+    )
+
+    entry = ResolverService(settings)._resolve_with_ytdlp(
+        "https://clips.example/watch/clip-1"
+    )
+    options = {option.id: option for option in entry.media.options}
+
+    assert options["video:1080"].kind.value == "video"
+    assert options["video:1080"].resolution == "1080p"
+    assert options["video:1080"].requires_merge is False
+    assert "audio:best" not in options
+    assert {"audio:mp3:320", "audio:m4a:256"}.issubset(options)
+
+
+def test_ytdlp_unknown_video_codec_merges_explicit_audio_track(monkeypatch) -> None:
+    info = {
+        "id": "split-1",
+        "title": "分离音视频",
+        "webpage_url": "https://media.example/watch/split-1",
+        "extractor_key": "ExampleSplit",
+        "formats": [
+            {
+                "format_id": "video-1080",
+                "url": "https://media.example/video.mp4",
+                "ext": "mp4",
+                "height": 1080,
+                "vcodec": None,
+                "acodec": None,
+            },
+            {
+                "format_id": "audio-aac",
+                "url": "https://media.example/audio.m4a",
+                "ext": "m4a",
+                "vcodec": "none",
+                "acodec": "aac",
+                "abr": 128,
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        SafeYoutubeDL,
+        "extract_info",
+        lambda _ydl, _url, download=False: info,
+    )
+
+    entry = ResolverService(settings)._resolve_with_ytdlp(
+        "https://media.example/watch/split-1"
+    )
+    options = {option.id: option for option in entry.media.options}
+    video = options["video:video-1080"]
+    spec = entry.specs[video.id]
+
+    assert video.requires_merge is True
+    assert "bestaudio" in (spec.selector or "")
+    assert "audio:best" in options
