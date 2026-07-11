@@ -8,16 +8,20 @@ class OpenMusicService {
   OpenMusicService({http.Client? client}) : _client = client ?? http.Client();
 
   final http.Client _client;
+  final List<String> _lastWarnings = [];
+
+  List<String> get lastWarnings => List.unmodifiable(_lastWarnings);
 
   Future<List<MusicSearchResult>> search(String query, {int limit = 60}) async {
     final term = query.trim();
     if (term.isEmpty) return const [];
+    _lastWarnings.clear();
     final buckets = await Future.wait([
-      _safe(() => _archive(term, 20)),
-      _safe(() => _commons(term, 16)),
-      _safe(() => _audius(term, 20)),
-      _safe(() => _apple(term, 20)),
-      _safe(() => _musicBrainz(term, 20)),
+      _safe('Internet Archive', () => _archive(term, 20)),
+      _safe('Wikimedia Commons', () => _commons(term, 16)),
+      _safe('Audius', () => _audius(term, 20)),
+      _safe('Apple Music', () => _apple(term, 20)),
+      _safe('MusicBrainz', () => _musicBrainz(term, 20)),
     ]);
     final merged = <MusicSearchResult>[];
     final positions = List<int>.filled(buckets.length, 0);
@@ -42,10 +46,12 @@ class OpenMusicService {
 
   Future<List<MusicFile>> files(String identifier) async {
     final separator = identifier.indexOf(':');
-    final source =
-        separator < 0 ? 'internet_archive' : identifier.substring(0, separator);
-    final value =
-        separator < 0 ? identifier : identifier.substring(separator + 1);
+    final source = separator < 0
+        ? 'internet_archive'
+        : identifier.substring(0, separator);
+    final value = separator < 0
+        ? identifier
+        : identifier.substring(separator + 1);
     return switch (source) {
       'internet_archive' => _archiveFiles(value),
       'wikimedia_commons' => _commonsFiles(value),
@@ -80,10 +86,10 @@ class OpenMusicService {
             itemUrl: 'https://archive.org/details/${Uri.encodeComponent(id)}',
             source: 'internet_archive',
             sourceLabel: 'Internet Archive',
-            canDownload: true,
+            canDownload: false,
             creator: creator,
             year: item['year']?.toString(),
-            license: '开放授权 / 公共领域（以资源页为准）',
+            license: '版权与下载权限请以资源页为准',
           );
         })
         .where((item) => item.identifier.length > 17)
@@ -91,13 +97,14 @@ class OpenMusicService {
   }
 
   Future<List<MusicSearchResult>> _musicBrainz(String query, int limit) async {
-    final data =
-        await _getMap(Uri.https('musicbrainz.org', '/ws/2/recording/', {
-      'query': query,
-      'fmt': 'json',
-      'limit': '$limit',
-      'dismax': 'true',
-    }));
+    final data = await _getMap(
+      Uri.https('musicbrainz.org', '/ws/2/recording/', {
+        'query': query,
+        'fmt': 'json',
+        'limit': '$limit',
+        'dismax': 'true',
+      }),
+    );
     final items = data['recordings'] as List? ?? const [];
     return items
         .whereType<Map>()
@@ -131,14 +138,16 @@ class OpenMusicService {
   }
 
   Future<List<MusicSearchResult>> _apple(String query, int limit) async {
-    final data = await _getMap(Uri.https('itunes.apple.com', '/search', {
-      'term': query,
-      'media': 'music',
-      'entity': 'song',
-      'country': 'CN',
-      'limit': '$limit',
-      'lang': 'zh_cn',
-    }));
+    final data = await _getMap(
+      Uri.https('itunes.apple.com', '/search', {
+        'term': query,
+        'media': 'music',
+        'entity': 'song',
+        'country': 'CN',
+        'limit': '$limit',
+        'lang': 'zh_cn',
+      }),
+    );
     final items = data['results'] as List? ?? const [];
     return items
         .whereType<Map>()
@@ -146,9 +155,10 @@ class OpenMusicService {
           final item = raw.cast<String, dynamic>();
           final id = item['trackId']?.toString() ?? '';
           final released = item['releaseDate']?.toString() ?? '';
-          final artwork = item['artworkUrl100']
-              ?.toString()
-              .replaceAll('100x100', '600x600');
+          final artwork = item['artworkUrl100']?.toString().replaceAll(
+            '100x100',
+            '600x600',
+          );
           final duration = (item['trackTimeMillis'] as num?)?.toInt();
           return MusicSearchResult(
             identifier: 'apple_music:$id',
@@ -170,11 +180,13 @@ class OpenMusicService {
   }
 
   Future<List<MusicSearchResult>> _audius(String query, int limit) async {
-    final data = await _getMap(Uri.https('api.audius.co', '/v1/tracks/search', {
-      'query': query,
-      'limit': '$limit',
-      'sort_method': 'relevant',
-    }));
+    final data = await _getMap(
+      Uri.https('api.audius.co', '/v1/tracks/search', {
+        'query': query,
+        'limit': '$limit',
+        'sort_method': 'relevant',
+      }),
+    );
     final items = data['data'] as List? ?? const [];
     return items
         .whereType<Map>()
@@ -212,22 +224,24 @@ class OpenMusicService {
   }
 
   Future<List<MusicSearchResult>> _commons(String query, int limit) async {
-    final data =
-        await _getMap(Uri.https('commons.wikimedia.org', '/w/api.php', {
-      'action': 'query',
-      'format': 'json',
-      'generator': 'search',
-      'gsrsearch': '$query filetype:audio',
-      'gsrnamespace': '6',
-      'gsrlimit': '$limit',
-      'prop': 'imageinfo|info',
-      'iiprop': 'url|mime|size|extmetadata',
-      'inprop': 'url',
-      'iiextmetadatalanguage': 'zh',
-    }));
+    final data = await _getMap(
+      Uri.https('commons.wikimedia.org', '/w/api.php', {
+        'action': 'query',
+        'format': 'json',
+        'generator': 'search',
+        'gsrsearch': '$query filetype:audio',
+        'gsrnamespace': '6',
+        'gsrlimit': '$limit',
+        'prop': 'imageinfo|info',
+        'iiprop': 'url|mime|size|extmetadata',
+        'inprop': 'url',
+        'iiextmetadatalanguage': 'zh',
+      }),
+    );
     final queryData =
         (data['query'] as Map?)?.cast<String, dynamic>() ?? const {};
-    final pages = (queryData['pages'] as Map?)?.values.whereType<Map>() ??
+    final pages =
+        (queryData['pages'] as Map?)?.values.whereType<Map>() ??
         const Iterable.empty();
     final results = <MusicSearchResult>[];
     for (final raw in pages) {
@@ -241,60 +255,79 @@ class OpenMusicService {
       final pageId = item['pageid']?.toString() ?? '';
       final title =
           item['title']?.toString().replaceFirst('File:', '') ?? pageId;
-      results.add(MusicSearchResult(
-        identifier: 'wikimedia_commons:$pageId',
-        title: _metadata(metadata, 'ObjectName') ?? title,
-        itemUrl: item['canonicalurl']?.toString() ??
-            info['descriptionurl']?.toString() ??
-            '',
-        source: 'wikimedia_commons',
-        sourceLabel: 'Wikimedia Commons',
-        canDownload: true,
-        creator: _metadata(metadata, 'Artist') ?? _metadata(metadata, 'Credit'),
-        previewUrl: info['url']?.toString(),
-        license: _metadata(metadata, 'LicenseShortName') ??
-            _metadata(metadata, 'UsageTerms'),
-      ));
+      results.add(
+        MusicSearchResult(
+          identifier: 'wikimedia_commons:$pageId',
+          title: _metadata(metadata, 'ObjectName') ?? title,
+          itemUrl:
+              item['canonicalurl']?.toString() ??
+              info['descriptionurl']?.toString() ??
+              '',
+          source: 'wikimedia_commons',
+          sourceLabel: 'Wikimedia Commons',
+          canDownload: true,
+          creator:
+              _metadata(metadata, 'Artist') ?? _metadata(metadata, 'Credit'),
+          previewUrl: info['url']?.toString(),
+          license:
+              _metadata(metadata, 'LicenseShortName') ??
+              _metadata(metadata, 'UsageTerms'),
+        ),
+      );
     }
     return results;
   }
 
   Future<List<MusicFile>> _archiveFiles(String identifier) async {
-    final data = await _getMap(Uri.https(
-        'archive.org', '/metadata/${Uri.encodeComponent(identifier)}'));
+    final data = await _getMap(
+      Uri.https('archive.org', '/metadata/${Uri.encodeComponent(identifier)}'),
+    );
     final items = data['files'] as List? ?? const [];
     final results = <MusicFile>[];
     for (final raw in items.whereType<Map>()) {
       final item = raw.cast<String, dynamic>();
       final name = item['name']?.toString() ?? '';
-      final extension =
-          name.contains('.') ? name.split('.').last.toLowerCase() : '';
-      if (!const {'flac', 'wav', 'mp3', 'm4a', 'ogg', 'opus'}
-          .contains(extension)) {
+      final extension = name.contains('.')
+          ? name.split('.').last.toLowerCase()
+          : '';
+      if (!const {
+        'flac',
+        'wav',
+        'mp3',
+        'm4a',
+        'ogg',
+        'opus',
+      }.contains(extension)) {
         continue;
       }
-      results.add(MusicFile(
-        name: name,
-        format: item['format']?.toString() ?? extension.toUpperCase(),
-        downloadUrl:
-            'https://archive.org/download/${Uri.encodeComponent(identifier)}/${Uri.encodeComponent(name)}',
-        size: int.tryParse(item['size']?.toString() ?? ''),
-      ));
+      results.add(
+        MusicFile(
+          name: name,
+          format: item['format']?.toString() ?? extension.toUpperCase(),
+          downloadUrl:
+              'https://archive.org/download/${Uri.encodeComponent(identifier)}/${Uri.encodeComponent(name)}',
+          size: int.tryParse(item['size']?.toString() ?? ''),
+        ),
+      );
     }
-    results.sort((a, b) => (a.format.toLowerCase().contains('flac') ? 0 : 1)
-        .compareTo(b.format.toLowerCase().contains('flac') ? 0 : 1));
+    results.sort(
+      (a, b) => (a.format.toLowerCase().contains('flac') ? 0 : 1).compareTo(
+        b.format.toLowerCase().contains('flac') ? 0 : 1,
+      ),
+    );
     return results.take(80).toList(growable: false);
   }
 
   Future<List<MusicFile>> _commonsFiles(String pageId) async {
-    final data =
-        await _getMap(Uri.https('commons.wikimedia.org', '/w/api.php', {
-      'action': 'query',
-      'format': 'json',
-      'pageids': pageId,
-      'prop': 'imageinfo',
-      'iiprop': 'url|mime|size',
-    }));
+    final data = await _getMap(
+      Uri.https('commons.wikimedia.org', '/w/api.php', {
+        'action': 'query',
+        'format': 'json',
+        'pageids': pageId,
+        'prop': 'imageinfo',
+        'iiprop': 'url|mime|size',
+      }),
+    );
     final pages = ((data['query'] as Map?)?['pages'] as Map?) ?? const {};
     final page = pages[pageId] as Map?;
     final infos = page?['imageinfo'] as List? ?? const [];
@@ -314,8 +347,9 @@ class OpenMusicService {
   }
 
   Future<List<MusicFile>> _audiusFiles(String identifier) async {
-    final data =
-        await _getMap(Uri.https('api.audius.co', '/v1/tracks/$identifier'));
+    final data = await _getMap(
+      Uri.https('api.audius.co', '/v1/tracks/$identifier'),
+    );
     final item = (data['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     final download =
         (item['download'] as Map?)?.cast<String, dynamic>() ?? const {};
@@ -325,7 +359,8 @@ class OpenMusicService {
     if (url.isEmpty) return const [];
     return [
       MusicFile(
-        name: item['orig_filename']?.toString() ??
+        name:
+            item['orig_filename']?.toString() ??
             '${item['title'] ?? identifier}.mp3',
         format: '原始音频',
         downloadUrl: url,
@@ -334,10 +369,15 @@ class OpenMusicService {
   }
 
   Future<Map<String, dynamic>> _getMap(Uri uri) async {
-    final response = await _client.get(uri, headers: const {
-      'user-agent':
-          'langbai-resolver/1.0.8 (https://github.com/2786886095/langbai-resolver)',
-    }).timeout(const Duration(seconds: 25));
+    final response = await _client
+        .get(
+          uri,
+          headers: const {
+            'user-agent':
+                'langbai-resolver/1.0.9 (https://github.com/2786886095/langbai-resolver)',
+          },
+        )
+        .timeout(const Duration(seconds: 25));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw OpenMusicException('音乐来源返回 ${response.statusCode}');
     }
@@ -347,11 +387,13 @@ class OpenMusicService {
   }
 
   Future<List<MusicSearchResult>> _safe(
+    String source,
     Future<List<MusicSearchResult>> Function() action,
   ) async {
     try {
       return await action();
-    } on Object {
+    } on Object catch (error) {
+      _lastWarnings.add('$source 暂不可用：$error');
       return const [];
     }
   }

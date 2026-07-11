@@ -14,17 +14,19 @@ Future<SaveResult> saveDownload(
   DownloadProgress onProgress, {
   SaveDestination destination = SaveDestination.files,
   String mediaType = 'file',
+  Map<String, String> headers = const {},
+  bool Function()? isCancelled,
 }) async {
   late final File target;
   final isMobile = Platform.isAndroid || Platform.isIOS;
   if (isMobile) {
     final directory =
         destination == SaveDestination.gallery || Platform.isAndroid
-            ? await getTemporaryDirectory()
-            : Directory(
-                '${(await getApplicationDocumentsDirectory()).path}'
-                '${Platform.pathSeparator}langbai解析',
-              );
+        ? await getTemporaryDirectory()
+        : Directory(
+            '${(await getApplicationDocumentsDirectory()).path}'
+            '${Platform.pathSeparator}langbai解析',
+          );
     await directory.create(recursive: true);
     target = _availableFile(directory, filename);
   } else {
@@ -36,8 +38,9 @@ Future<SaveResult> saveDownload(
     if (preferredDirectory != null && await preferredDirectory.exists()) {
       target = _availableFile(preferredDirectory, filename);
     } else {
-      final location =
-          await getSaveLocation(suggestedName: _safeFilename(filename));
+      final location = await getSaveLocation(
+        suggestedName: _safeFilename(filename),
+      );
       if (location == null) {
         return const SaveResult(message: '已取消保存', cancelled: true);
       }
@@ -45,24 +48,50 @@ Future<SaveResult> saveDownload(
     }
   }
 
-  final request = http.Request('GET', uri);
-  final response = await http.Client().send(request);
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw HttpException('文件下载失败（${response.statusCode}）', uri: uri);
-  }
-  final total = response.contentLength;
-  var received = 0;
-  final sink = target.openWrite();
+  const maxDownloadBytes = 8 * 1024 * 1024 * 1024;
+  final client = http.Client();
+  IOSink? sink;
   try {
-    await for (final chunk in response.stream) {
-      sink.add(chunk);
+    final request = http.Request('GET', uri)
+      ..followRedirects = false
+      ..maxRedirects = 0
+      ..headers.addAll(headers);
+    final response = await client
+        .send(request)
+        .timeout(const Duration(seconds: 30));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException('文件下载失败（${response.statusCode}）', uri: uri);
+    }
+    final total = response.contentLength;
+    if (total != null && total > maxDownloadBytes) {
+      throw const FileSystemException('文件超过 8 GB 安全上限');
+    }
+    var received = 0;
+    sink = target.openWrite();
+    await for (final chunk in response.stream.timeout(
+      const Duration(seconds: 60),
+    )) {
+      if (isCancelled?.call() == true) {
+        throw const FileSystemException('下载已取消');
+      }
       received += chunk.length;
+      if (received > maxDownloadBytes) {
+        throw const FileSystemException('文件超过 8 GB 安全上限');
+      }
+      sink.add(chunk);
       if (total != null && total > 0) {
         onProgress((received / total).clamp(0, 1));
       }
     }
-  } finally {
+    await sink.flush();
     await sink.close();
+    sink = null;
+  } on Object {
+    await sink?.close();
+    if (await target.exists()) await target.delete();
+    rethrow;
+  } finally {
+    client.close();
   }
   onProgress(1);
 
@@ -73,13 +102,14 @@ Future<SaveResult> saveDownload(
     try {
       final raw = await const MethodChannel('com.langbai.resolver/local_media')
           .invokeMapMethod<String, dynamic>('saveMobileFile', {
-        'path': target.path,
-        'filename': filename,
-        'save_destination': destination.name,
-        'media_type': mediaType,
-      });
+            'path': target.path,
+            'filename': filename,
+            'save_destination': destination.name,
+            'media_type': mediaType,
+          });
       return SaveResult(
-        message: raw?['message']?.toString() ??
+        message:
+            raw?['message']?.toString() ??
             (destination == SaveDestination.gallery
                 ? '已保存到系统相册'
                 : '已保存到 Download/langbai解析'),

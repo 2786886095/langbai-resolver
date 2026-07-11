@@ -1,6 +1,8 @@
 package com.langbai.mediaharbor
 
+import android.Manifest
 import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -8,6 +10,8 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.yausername.aria2c.Aria2c
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
@@ -18,18 +22,32 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.CookieManager
+import java.net.CookiePolicy
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.util.UUID
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 class MainActivity : FlutterActivity() {
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newFixedThreadPool(3)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resolved = ConcurrentHashMap<String, LocalMedia>()
+    private val activeConnections = ConcurrentHashMap<String, HttpURLConnection>()
+    private val cancelledProcesses = ConcurrentHashMap.newKeySet<String>()
+    private val progressState = ConcurrentHashMap<String, ProgressState>()
+    private val pendingStoragePermissions = mutableListOf<PendingStoragePermission>()
+    private val engineLock = ReentrantReadWriteLock()
     private lateinit var channel: MethodChannel
 
     @Volatile
@@ -45,6 +63,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        activeConnections.values.forEach { it.disconnect() }
+        activeConnections.clear()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -52,6 +72,7 @@ class MainActivity : FlutterActivity() {
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "isAvailable" -> result.success(true)
+            "getCapabilities" -> result.success(capabilities())
             "resolve" -> runAsync(result) {
                 val input = call.argument<String>("url")?.trim().orEmpty()
                 val url = extractHttpUrl(input)
@@ -62,48 +83,111 @@ class MainActivity : FlutterActivity() {
                 )
                 resolveLocally(url, bilibiliCookie)
             }
-            "download" -> runAsync(result) {
-                val mediaId = call.argument<String>("media_id").orEmpty()
-                val optionId = call.argument<String>("option_id").orEmpty()
-                val processId = call.argument<String>("process_id") ?: UUID.randomUUID().toString()
-                val destination = call.argument<String>("save_destination") ?: "files"
-                downloadLocally(mediaId, optionId, processId, destination)
-            }
-            "saveMobileFile" -> runAsync(result) {
-                val path = call.argument<String>("path").orEmpty()
-                val source = File(path)
-                require(source.isFile) { "待保存文件不存在" }
-                val destination = call.argument<String>("save_destination") ?: "files"
-                val mediaType = call.argument<String>("media_type") ?: "file"
-                val published = if (destination == "gallery") {
-                    require(mediaType == "image" || mediaType == "video") {
-                        "只有图片和视频可以保存到相册"
-                    }
-                    publishToGallery(source, mediaType)
-                } else {
-                    publishToDownloads(source)
+            "download" -> withLegacyStoragePermission(result) {
+                runAsync(result) {
+                    val mediaId = call.argument<String>("media_id").orEmpty()
+                    val optionId = call.argument<String>("option_id").orEmpty()
+                    val processId = call.argument<String>("process_id") ?: UUID.randomUUID().toString()
+                    val destination = call.argument<String>("save_destination") ?: "files"
+                    downloadLocally(mediaId, optionId, processId, destination)
                 }
-                mapOf(
-                    "filename" to published.name,
-                    "path" to published.location,
-                    "message" to if (destination == "gallery") {
-                        "已保存到系统相册"
+            }
+            "saveMobileFile" -> withLegacyStoragePermission(result) {
+                runAsync(result) {
+                    val path = call.argument<String>("path").orEmpty()
+                    val source = File(path)
+                    require(source.isFile) { "待保存文件不存在" }
+                    val destination = call.argument<String>("save_destination") ?: "files"
+                    val mediaType = call.argument<String>("media_type") ?: "file"
+                    val published = if (destination == "gallery") {
+                        require(mediaType == "image" || mediaType == "video") {
+                            "只有图片和视频可以保存到相册"
+                        }
+                        publishToGallery(source, mediaType)
                     } else {
-                        "已保存到 Download/langbai解析/${published.name}"
-                    },
-                )
+                        publishToDownloads(source)
+                    }
+                    mapOf(
+                        "filename" to published.name,
+                        "path" to published.location,
+                        "message" to if (destination == "gallery") {
+                            "已保存到系统相册"
+                        } else {
+                            "已保存到 Download/langbai解析/${published.name}"
+                        },
+                    )
+                }
+            }
+            "cancelDownload" -> {
+                val processId = call.argument<String>("process_id").orEmpty()
+                result.success(mapOf("cancelled" to cancelDownload(processId)))
+            }
+            "clearSession" -> {
+                clearSession()
+                result.success(mapOf("cleared" to true))
             }
             "updateEngine" -> runAsync(result) {
-                ensureEngine()
-                YoutubeDL.getInstance().updateYoutubeDL(
-                    applicationContext,
-                    YoutubeDL.UpdateChannel.STABLE,
-                )
-                mapOf(
-                    "version" to (YoutubeDL.getInstance().versionName(applicationContext) ?: "最新版本"),
-                )
+                engineLock.write {
+                    ensureEngine()
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        applicationContext,
+                        YoutubeDL.UpdateChannel.STABLE,
+                    )
+                    mapOf(
+                        "version" to (YoutubeDL.getInstance().versionName(applicationContext) ?: "最新版本"),
+                    )
+                }
             }
             else -> result.notImplemented()
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != STORAGE_PERMISSION_REQUEST) return
+        val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        val pending = synchronized(pendingStoragePermissions) {
+            pendingStoragePermissions.toList().also { pendingStoragePermissions.clear() }
+        }
+        pending.forEach { item ->
+            if (granted) {
+                item.action()
+            } else {
+                item.result.error(
+                    "STORAGE_PERMISSION_DENIED",
+                    "需要存储权限才能保存到公共 Download 或系统相册",
+                    null,
+                )
+            }
+        }
+    }
+
+    private fun withLegacyStoragePermission(
+        result: MethodChannel.Result,
+        action: () -> Unit,
+    ) {
+        if (
+            Build.VERSION.SDK_INT > Build.VERSION_CODES.P ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            action()
+            return
+        }
+        val shouldRequest = synchronized(pendingStoragePermissions) {
+            pendingStoragePermissions += PendingStoragePermission(result, action)
+            pendingStoragePermissions.size == 1
+        }
+        if (shouldRequest) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                STORAGE_PERMISSION_REQUEST,
+            )
         }
     }
 
@@ -122,6 +206,49 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun capabilities(): Map<String, Any?> = mapOf(
+        "platform" to "android",
+        "local_resolver" to true,
+        "engine_update" to true,
+        "download_progress" to true,
+        "download_cancellation" to true,
+        // The embedded parser cannot safely continue after the app process is killed.
+        "background_download" to false,
+        "save_to_files" to true,
+        "save_to_gallery" to true,
+        "tools" to mapOf(
+            "resolve" to true,
+            "audio_extract" to false,
+            "compress" to false,
+            "web_sniff" to false,
+            "direct_download" to false,
+            "magnet" to false,
+            "torrent" to false,
+            "metadata" to false,
+            "music_search" to true,
+        ),
+    )
+
+    private fun cancelDownload(processId: String): Boolean {
+        if (processId.isBlank()) return false
+        val requested = cancelledProcesses.add(processId)
+        val disconnected = activeConnections.remove(processId)?.let {
+            it.disconnect()
+            true
+        } ?: false
+        val stopped = runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }
+            .getOrDefault(false)
+        return requested || disconnected || stopped || progressState.containsKey(processId)
+    }
+
+    private fun clearSession() {
+        resolved.clear()
+        (activeConnections.keys + progressState.keys).toSet().forEach(::cancelDownload)
+        cacheDir.listFiles()
+            ?.filter { it.name.startsWith("langbai-bilibili-") }
+            ?.forEach(File::delete)
+    }
+
     @Synchronized
     private fun ensureEngine() {
         if (engineReady) return
@@ -132,19 +259,24 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun resolveLocally(url: String, bilibiliCookie: String?): Map<String, Any?> {
+        if (isKuaishouUrl(url)) {
+            return resolveKuaishouShare(url)
+        }
         if (isDouyinUrl(url)) {
             return resolveDouyinShare(url)
         }
         ensureEngine()
-        val response = withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
-            val request = YoutubeDLRequest(url)
-                .addOption("--dump-single-json")
-                .addOption("--no-playlist")
-                .addOption("--skip-download")
-                .addOption("--socket-timeout", "25")
-                .addOption("--retries", "2")
-            cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
-            YoutubeDL.getInstance().execute(request)
+        val response = engineLock.read {
+            withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
+                val request = YoutubeDLRequest(url)
+                    .addOption("--dump-single-json")
+                    .addOption("--no-playlist")
+                    .addOption("--skip-download")
+                    .addOption("--socket-timeout", "25")
+                    .addOption("--retries", "2")
+                cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
+                YoutubeDL.getInstance().execute(request)
+            }
         }
         val root = JSONObject(response.out.trim())
         val effective = effectiveEntry(root)
@@ -164,6 +296,7 @@ class MainActivity : FlutterActivity() {
                 kind = "image",
                 extension = extension,
                 directUrl = thumbnail,
+                headers = safeHttpHeaders(effective.optJSONObject("http_headers")),
             )
             options += optionMap(
                 id = id,
@@ -256,6 +389,178 @@ class MainActivity : FlutterActivity() {
             host == "iesdouyin.com" || host.endsWith(".iesdouyin.com")
     }
 
+    private fun isKuaishouUrl(value: String): Boolean {
+        val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
+        return KUAISHOU_HOSTS.any { host == it || host.endsWith(".$it") }
+    }
+
+    private fun fetchKuaishouPage(sourceUrl: String): Pair<String, String> {
+        val cookieManager = CookieManager(null, CookiePolicy.ACCEPT_ALL)
+        var current = sourceUrl
+        repeat(8) {
+            require(isKuaishouUrl(current)) { "快手短链接跳转到了未知站点" }
+            val uri = URI(current)
+            val connection = URL(current).openConnection() as HttpURLConnection
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 25_000
+            connection.setRequestProperty("User-Agent", KUAISHOU_MOBILE_USER_AGENT)
+            connection.setRequestProperty(
+                "Accept",
+                "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            )
+            connection.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
+            connection.setRequestProperty("Referer", "https://v.kuaishou.com/")
+            cookieManager.get(uri, emptyMap())["Cookie"]
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { connection.setRequestProperty("Cookie", it.joinToString("; ")) }
+            connection.connect()
+            val responseCode = connection.responseCode
+            val responseHeaders = connection.headerFields
+                .filterKeys { it != null }
+                .mapKeys { it.key!! }
+            cookieManager.put(uri, responseHeaders)
+            val location = connection.getHeaderField("Location")
+            if (responseCode in 300..399 && !location.isNullOrBlank()) {
+                current = URL(URL(current), location).toString()
+                connection.disconnect()
+                return@repeat
+            }
+            require(responseCode in 200..299) { "快手匿名分享页返回 $responseCode" }
+            val html = connection.inputStream.use(::readLimitedHtml)
+            val finalUrl = connection.url.toString()
+            connection.disconnect()
+            require(isKuaishouUrl(finalUrl)) { "快手短链接跳转到了未知站点" }
+            return finalUrl to html
+        }
+        error("快手短链接跳转次数过多")
+    }
+
+    private fun findKuaishouPhoto(value: Any?, depth: Int = 0): JSONObject? {
+        if (depth > 6) return null
+        when (value) {
+            is JSONObject -> {
+                value.optJSONObject("photo")?.let { return it }
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    findKuaishouPhoto(value.opt(keys.next()), depth + 1)?.let { return it }
+                }
+            }
+            is JSONArray -> {
+                for (index in 0 until value.length()) {
+                    findKuaishouPhoto(value.opt(index), depth + 1)?.let { return it }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun firstKuaishouUrl(values: JSONArray?): String? {
+        if (values == null) return null
+        for (index in 0 until values.length()) {
+            val item = values.opt(index)
+            val candidate = when (item) {
+                is JSONObject -> text(item, "url")
+                else -> item?.toString()?.trim()
+            }
+            if (candidate?.startsWith("http://") == true || candidate?.startsWith("https://") == true) {
+                return candidate
+            }
+        }
+        return null
+    }
+
+    private fun resolveKuaishouShare(sourceUrl: String): Map<String, Any?> {
+        val (_, html) = fetchKuaishouPage(sourceUrl)
+        val marker = "window.INIT_STATE ="
+        val markerIndex = html.indexOf(marker)
+        val jsonStart = html.indexOf('{', markerIndex + marker.length)
+        val scriptEnd = html.indexOf("</script>", jsonStart)
+        require(markerIndex >= 0 && jsonStart >= 0 && scriptEnd > jsonStart) {
+            "快手匿名分享页没有内嵌作品数据"
+        }
+        val state = JSONObject(html.substring(jsonStart, scriptEnd).trim().removeSuffix(";"))
+        val photo = findKuaishouPhoto(state) ?: error("快手匿名分享页没有返回作品详情")
+        val specs = linkedMapOf<String, LocalOption>()
+        val options = mutableListOf<Map<String, Any?>>()
+        val width = positiveInt(photo, "width")
+        val height = positiveInt(photo, "height")
+        val playUrl = firstKuaishouUrl(photo.optJSONArray("mainMvUrls"))
+        if (playUrl != null) {
+            val id = "video:kuaishou-share"
+            specs[id] = LocalOption(
+                "video",
+                "mp4",
+                directUrl = playUrl,
+                headers = mapOf(
+                    "User-Agent" to KUAISHOU_MOBILE_USER_AGENT,
+                    "Referer" to "https://v.kuaishou.com/",
+                ),
+            )
+            options += optionMap(
+                id = id,
+                kind = "video",
+                label = "快手公开视频 · MP4",
+                extension = "mp4",
+                resolution = if (width != null && height != null) "${width}x$height" else null,
+            )
+        }
+
+        val imageUrls = linkedSetOf<String>()
+        val coverUrl = firstKuaishouUrl(photo.optJSONArray("coverUrls"))
+        if (coverUrl != null) imageUrls += coverUrl
+        for (key in listOf("imageUrls", "images")) {
+            val values = photo.optJSONArray(key) ?: continue
+            for (index in 0 until values.length()) {
+                val item = values.opt(index)
+                val imageUrl = when (item) {
+                    is JSONObject -> text(item, "url") ?: firstKuaishouUrl(item.optJSONArray("urls"))
+                    else -> item?.toString()?.trim()
+                }
+                if (imageUrl?.startsWith("http://") == true || imageUrl?.startsWith("https://") == true) {
+                    imageUrls += imageUrl
+                }
+                if (imageUrls.size >= 40) break
+            }
+        }
+        imageUrls.forEachIndexed { index, imageUrl ->
+            val isCover = imageUrl == coverUrl
+            val id = if (isCover) "image:cover" else "image:${index + 1}"
+            val extension = extensionFromUrl(imageUrl, "jpg")
+            specs[id] = LocalOption(
+                "image",
+                extension,
+                directUrl = imageUrl,
+                headers = mapOf("User-Agent" to KUAISHOU_MOBILE_USER_AGENT),
+            )
+            options += optionMap(
+                id = id,
+                kind = "image",
+                label = if (isCover) "最高质量封面" else "图片 ${index + 1}",
+                extension = extension,
+            )
+        }
+        require(options.isNotEmpty()) { "快手匿名分享页没有返回视频或图片地址" }
+
+        val mediaId = UUID.randomUUID().toString()
+        val photoId = text(photo, "photoId")
+        val title = text(photo, "caption") ?: photoId?.let { "快手作品 $it" } ?: "快手作品"
+        resolved[mediaId] = LocalMedia(sourceUrl, title, specs)
+        val durationMs = positiveInt(photo, "duration")
+            ?: photo.optJSONObject("ext_params")?.let { positiveInt(it, "sound") }
+        return mapOf(
+            "media_id" to mediaId,
+            "source_url" to sourceUrl,
+            "title" to title,
+            "creator" to text(photo, "userName"),
+            "platform" to "Kuaishou",
+            "duration_seconds" to durationMs?.div(1000),
+            "thumbnail_url" to coverUrl,
+            "options" to options,
+            "warnings" to listOf("不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"),
+        )
+    }
+
     private fun douyinVideoId(value: String): String? {
         Regex("/(?:video|note)/(\\d{10,})").find(value)?.let { return it.groupValues[1] }
         val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
@@ -284,7 +589,7 @@ class MainActivity : FlutterActivity() {
                 videoId = douyinVideoId(current)
             } else {
                 require(responseCode in 200..299) { "抖音短链接返回 $responseCode" }
-                val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val html = connection.inputStream.use(::readLimitedHtml)
                 videoId = douyinVideoId(connection.url.toString())
                     ?: Regex("(?:video|note)[/\\\\\"]+(\\d{10,})").find(html)?.groupValues?.get(1)
             }
@@ -302,7 +607,7 @@ class MainActivity : FlutterActivity() {
         require(connection.responseCode in 200..299) {
             "抖音匿名分享页返回 ${connection.responseCode}"
         }
-        val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val html = connection.inputStream.use(::readLimitedHtml)
         connection.disconnect()
         val marker = "window._ROUTER_DATA ="
         val markerIndex = html.indexOf(marker)
@@ -340,7 +645,12 @@ class MainActivity : FlutterActivity() {
             val resolution = Uri.parse(playUrl).getQueryParameter("ratio")
                 ?: if (width != null && height != null) "${width}x$height" else null
             val id = "video:douyin-share"
-            specs[id] = LocalOption("video", "mp4", directUrl = playUrl)
+            specs[id] = LocalOption(
+                "video",
+                "mp4",
+                directUrl = playUrl,
+                headers = mapOf("User-Agent" to DOUYIN_MOBILE_USER_AGENT),
+            )
             options += optionMap(
                 id = id,
                 kind = "video",
@@ -352,7 +662,12 @@ class MainActivity : FlutterActivity() {
         val coverUrl = firstHttpUrl(video.optJSONObject("cover")?.optJSONArray("url_list"))
         if (coverUrl != null) {
             val extension = extensionFromUrl(coverUrl, "jpg")
-            specs["image:cover"] = LocalOption("image", extension, directUrl = coverUrl)
+            specs["image:cover"] = LocalOption(
+                "image",
+                extension,
+                directUrl = coverUrl,
+                headers = mapOf("User-Agent" to DOUYIN_MOBILE_USER_AGENT),
+            )
             options += optionMap(
                 id = "image:cover",
                 kind = "image",
@@ -369,7 +684,12 @@ class MainActivity : FlutterActivity() {
                 ) ?: continue
                 val id = "image:${index + 1}"
                 val extension = extensionFromUrl(imageUrl, "jpg")
-                specs[id] = LocalOption("image", extension, directUrl = imageUrl)
+                specs[id] = LocalOption(
+                    "image",
+                    extension,
+                    directUrl = imageUrl,
+                    headers = mapOf("User-Agent" to DOUYIN_MOBILE_USER_AGENT),
+                )
                 options += optionMap(id, "image", "图片 ${index + 1}", extension)
             }
         }
@@ -387,7 +707,7 @@ class MainActivity : FlutterActivity() {
             "duration_seconds" to positiveInt(video, "duration")?.div(1000),
             "thumbnail_url" to coverUrl,
             "options" to options,
-            "warnings" to listOf("已通过抖音匿名分享页直接解析，全程不读取或发送 Cookie。"),
+            "warnings" to listOf("不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"),
         )
     }
 
@@ -451,6 +771,7 @@ class MainActivity : FlutterActivity() {
                 kind = "video",
                 extension = extension,
                 selector = selector,
+                headers = safeHttpHeaders(item.optJSONObject("http_headers")),
             )
             val label = buildList {
                 add(height?.let { "${it}p" } ?: text(item, "format_note") ?: "视频")
@@ -523,7 +844,12 @@ class MainActivity : FlutterActivity() {
             if (extension !in IMAGE_EXTENSIONS) continue
             imageIndex += 1
             val id = "image:entry:$imageIndex"
-            specs[id] = LocalOption("image", extension, directUrl = direct)
+            specs[id] = LocalOption(
+                "image",
+                extension,
+                directUrl = direct,
+                headers = safeHttpHeaders(item.optJSONObject("http_headers")),
+            )
             options += optionMap(
                 id = id,
                 kind = "image",
@@ -548,7 +874,12 @@ class MainActivity : FlutterActivity() {
             else -> "video"
         }
         val id = "$kind:direct"
-        specs[id] = LocalOption(kind, extension, directUrl = direct)
+        specs[id] = LocalOption(
+            kind,
+            extension,
+            directUrl = direct,
+            headers = safeHttpHeaders(info.optJSONObject("http_headers")),
+        )
         options += optionMap(
             id = id,
             kind = kind,
@@ -569,29 +900,43 @@ class MainActivity : FlutterActivity() {
         val taskDir = File(cacheDir, "local-media/$processId")
         taskDir.deleteRecursively()
         taskDir.mkdirs()
-        val output = if (option.directUrl != null) {
-            downloadDirect(option.directUrl, media.title, option.extension, taskDir, processId)
-        } else {
-            downloadWithYtDlp(media, option, taskDir, processId)
-        }
-        val published = if (destination == "gallery") {
-            require(option.kind == "image" || option.kind == "video") {
-                "只有图片和视频可以保存到相册"
-            }
-            publishToGallery(output, option.kind)
-        } else {
-            publishToDownloads(output)
-        }
-        taskDir.deleteRecursively()
-        return mapOf(
-            "filename" to published.name,
-            "path" to published.location,
-            "message" to if (destination == "gallery") {
-                "已保存到系统相册"
+        progressState[processId] = ProgressState()
+        try {
+            checkNotCancelled(processId)
+            val output = if (option.directUrl != null) {
+                downloadDirect(option, media.title, taskDir, processId)
             } else {
-                "已保存到 Download/langbai解析/${published.name}"
-            },
-        )
+                downloadWithYtDlp(media, option, taskDir, processId)
+            }
+            checkNotCancelled(processId)
+            require(output.length() <= MAX_DOWNLOAD_BYTES) { "最终文件超过 8 GB 安全上限" }
+            val published = if (destination == "gallery") {
+                require(option.kind == "image" || option.kind == "video") {
+                    "只有图片和视频可以保存到相册"
+                }
+                publishToGallery(output, option.kind)
+            } else {
+                publishToDownloads(output)
+            }
+            emitProgress(processId, 100.0, 0, "下载完成", force = true)
+            return mapOf(
+                "filename" to published.name,
+                "path" to published.location,
+                "message" to if (destination == "gallery") {
+                    "已保存到系统相册"
+                } else {
+                    "已保存到 Download/langbai解析/${published.name}"
+                },
+            )
+        } catch (error: Throwable) {
+            if (processId in cancelledProcesses) throw DownloadCancelledException()
+            throw error
+        } finally {
+            activeConnections.remove(processId)?.disconnect()
+            cancelledProcesses.remove(processId)
+            progressState.remove(processId)
+            taskDir.deleteRecursively()
+        }
     }
 
     private fun downloadWithYtDlp(
@@ -609,16 +954,22 @@ class MainActivity : FlutterActivity() {
             .addOption("--retries", "4")
             .addOption("-o", template)
         option.selector?.let { request.addOption("-f", it) }
+        option.headers.forEach { (name, value) ->
+            request.addOption("--add-header", "$name:$value")
+        }
+        request.addOption("--max-filesize", MAX_DOWNLOAD_BYTES.toString())
         if (option.kind == "audio") {
             request
                 .addOption("--extract-audio")
                 .addOption("--audio-format", option.extension)
                 .addOption("--audio-quality", option.audioQuality ?: "0")
         }
-        withBilibiliCookieFile(media.bilibiliCookie) { cookieFile ->
-            cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
-            YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
-                emitProgress(processId, progress.toDouble(), eta, line)
+        engineLock.read {
+            withBilibiliCookieFile(media.bilibiliCookie) { cookieFile ->
+                cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
+                YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
+                    emitProgress(processId, progress.toDouble(), eta, line)
+                }
             }
         }
         return taskDir.walkTopDown()
@@ -628,40 +979,55 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun downloadDirect(
-        directUrl: String,
+        option: LocalOption,
         title: String,
-        extension: String,
         taskDir: File,
         processId: String,
     ): File {
+        val directUrl = option.directUrl ?: error("媒体直链不存在")
+        val extension = option.extension.ifBlank { extensionFromUrl(directUrl, "bin") }
         val target = File(taskDir, "${safeFilename(title)}.$extension")
         val connection = URL(directUrl).openConnection() as HttpURLConnection
+        activeConnections[processId] = connection
         connection.instanceFollowRedirects = true
         connection.connectTimeout = 20_000
         connection.readTimeout = 45_000
-        connection.setRequestProperty(
+        val headers = option.headers.toMutableMap()
+        headers.putIfAbsent(
             "User-Agent",
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36",
         )
-        connection.connect()
-        require(connection.responseCode in 200..299) { "媒体服务器返回 ${connection.responseCode}" }
-        val total = connection.contentLengthLong
-        connection.inputStream.use { input ->
-            FileOutputStream(target).use { output ->
-                val buffer = ByteArray(256 * 1024)
-                var downloaded = 0L
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    downloaded += count
-                    val progress = if (total > 0) downloaded * 100.0 / total else 0.0
-                    emitProgress(processId, progress, null, "正在下载")
+        headers.forEach(connection::setRequestProperty)
+        try {
+            checkNotCancelled(processId)
+            connection.connect()
+            require(connection.responseCode in 200..299) { "媒体服务器返回 ${connection.responseCode}" }
+            val total = connection.contentLengthLong
+            require(total <= 0 || total <= MAX_DOWNLOAD_BYTES) { "文件超过 8 GB 安全上限" }
+            connection.inputStream.use { input ->
+                FileOutputStream(target).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var downloaded = 0L
+                    while (true) {
+                        checkNotCancelled(processId)
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        downloaded += count
+                        require(downloaded <= MAX_DOWNLOAD_BYTES) { "文件超过 8 GB 安全上限" }
+                        val progress = if (total > 0) downloaded * 100.0 / total else 0.0
+                        emitProgress(processId, progress, null, "正在下载")
+                    }
                 }
             }
+            return target
+        } catch (error: Throwable) {
+            target.delete()
+            throw error
+        } finally {
+            activeConnections.remove(processId, connection)
+            connection.disconnect()
         }
-        connection.disconnect()
-        return target
     }
 
     private fun publishToDownloads(source: File): PublishedFile {
@@ -693,8 +1059,8 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        val base = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?: error("设备没有可用的下载目录")
+        @Suppress("DEPRECATION")
+        val base = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val directory = File(base, "langbai解析").apply { mkdirs() }
         val destination = uniqueFile(directory, name)
         source.copyTo(destination, overwrite = false)
@@ -755,18 +1121,70 @@ class MainActivity : FlutterActivity() {
         progress: Double,
         etaSeconds: Long?,
         status: String?,
+        force: Boolean = false,
     ) {
+        val now = System.currentTimeMillis()
+        val normalized = progress.coerceIn(0.0, 100.0)
+        val state = progressState.computeIfAbsent(processId) { ProgressState() }
+        synchronized(state) {
+            if (
+                !force &&
+                normalized < 100.0 &&
+                normalized - state.progress < 1.0 &&
+                now - state.timestamp < 500
+            ) {
+                return
+            }
+            state.progress = normalized
+            state.timestamp = now
+        }
         mainHandler.post {
             channel.invokeMethod(
                 "downloadProgress",
                 mapOf(
                     "process_id" to processId,
-                    "progress" to progress.coerceIn(0.0, 100.0),
+                    "progress" to normalized,
                     "eta_seconds" to etaSeconds,
                     "status" to status,
                 ),
             )
         }
+    }
+
+    private fun checkNotCancelled(processId: String) {
+        if (processId in cancelledProcesses || Thread.currentThread().isInterrupted) {
+            throw DownloadCancelledException()
+        }
+    }
+
+    private fun readLimitedHtml(input: InputStream): String {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            require(total <= MAX_HTML_BYTES) { "页面响应体超过 8 MB 安全上限" }
+            output.write(buffer, 0, count)
+        }
+        return output.toString(Charsets.UTF_8.name())
+    }
+
+    private fun safeHttpHeaders(value: JSONObject?): Map<String, String> {
+        if (value == null) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val keys = value.keys()
+        while (keys.hasNext()) {
+            val rawName = keys.next()
+            val name = SAFE_HEADER_NAMES.firstOrNull { it.equals(rawName, ignoreCase = true) }
+                ?: continue
+            val headerValue = value.optString(rawName).trim()
+            if (headerValue.isNotEmpty() && '\r' !in headerValue && '\n' !in headerValue) {
+                result[name] = headerValue.take(2048)
+            }
+        }
+        return result
     }
 
     private fun optionMap(
@@ -833,7 +1251,7 @@ class MainActivity : FlutterActivity() {
         val units = listOf("B", "KB", "MB", "GB", "TB")
         for (unit in units) {
             if (size < 1024 || unit == units.last()) {
-                return if (unit == "B") "${size.toLong()} B" else String.format("%.1f %s", size, unit)
+                return if (unit == "B") "${size.toLong()} B" else String.format(Locale.ROOT, "%.1f %s", size, unit)
             }
             size /= 1024
         }
@@ -866,6 +1284,14 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun friendlyMessage(error: Throwable): String {
+        if (
+            error is DownloadCancelledException ||
+            generateSequence(error) { it.cause }.any {
+                it.javaClass.simpleName.contains("CanceledException", ignoreCase = true)
+            }
+        ) {
+            return "下载已取消"
+        }
         val raw = generateSequence(error) { it.cause }
             .mapNotNull { it.message?.trim() }
             .firstOrNull { it.isNotEmpty() }
@@ -877,6 +1303,27 @@ class MainActivity : FlutterActivity() {
             .takeLast(4)
             .joinToString(" ")
             .replace(Regex("ERROR:\\s*"), "")
+        val lower = useful.lowercase()
+        if (
+            "fresh cookies" in lower ||
+            "cookies (not necessarily logged in) are needed" in lower ||
+            "cookies are needed" in lower ||
+            "cookies are required" in lower ||
+            "sign in to confirm you're not a bot" in lower ||
+            "sign in to confirm you’re not a bot" in lower ||
+            "use --cookies-from-browser or --cookies" in lower
+        ) {
+            return "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取 Cookie"
+        }
+        if ("ip address is blocked" in lower) {
+            return "当前网络出口被该平台限制，请切换网络后重试"
+        }
+        if ("impersonate targets are available" in lower) {
+            return "该平台需要浏览器模拟组件，当前手机本地解析器暂不支持"
+        }
+        if ("phantomjs not found" in lower) {
+            return "斗鱼当前解析接口需要额外浏览器组件，手机本地解析暂不支持"
+        }
         return useful.take(500).ifEmpty { "本地解析失败，请更新解析器后重试" }
     }
 
@@ -893,7 +1340,20 @@ class MainActivity : FlutterActivity() {
         val selector: String? = null,
         val audioQuality: String? = null,
         val directUrl: String? = null,
+        val headers: Map<String, String> = emptyMap(),
     )
+
+    private data class PendingStoragePermission(
+        val result: MethodChannel.Result,
+        val action: () -> Unit,
+    )
+
+    private data class ProgressState(
+        var progress: Double = -1.0,
+        var timestamp: Long = 0,
+    )
+
+    private class DownloadCancelledException : RuntimeException("下载已取消")
 
     private data class AudioPreset(
         val id: String,
@@ -905,8 +1365,14 @@ class MainActivity : FlutterActivity() {
     private data class PublishedFile(val name: String, val location: String)
 
     companion object {
+        private const val STORAGE_PERMISSION_REQUEST = 1708
+        private const val MAX_HTML_BYTES = 8 * 1024 * 1024
+        private const val MAX_DOWNLOAD_BYTES = 8L * 1024 * 1024 * 1024
         private const val DOUYIN_MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
+        private const val KUAISHOU_MOBILE_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        private val KUAISHOU_HOSTS = setOf("kuaishou.com", "chenzhongtech.com", "gifshow.com")
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "avif", "gif")
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "ogg", "opus", "wav", "flac")
         private val BILIBILI_COOKIE_NAMES = setOf(
@@ -917,6 +1383,14 @@ class MainActivity : FlutterActivity() {
             "sid",
             "bili_ticket",
             "bili_ticket_expires",
+        )
+        private val SAFE_HEADER_NAMES = setOf(
+            "User-Agent",
+            "Referer",
+            "Origin",
+            "Accept",
+            "Accept-Language",
+            "Range",
         )
     }
 }

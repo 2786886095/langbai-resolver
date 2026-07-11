@@ -1,5 +1,17 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 from app.models import MusicSearchResult
-from app.services.music import OpenMusicService
+from app.services.music import OpenMusicService, _license_allows_download
+
+
+def test_only_explicit_open_licenses_enable_downloads() -> None:
+    assert _license_allows_download("CC BY-SA 4.0")
+    assert _license_allows_download("https://creativecommons.org/licenses/by/4.0/")
+    assert _license_allows_download("Public Domain")
+    assert not _license_allows_download("All rights reserved")
+    assert not _license_allows_download("Copyright 2026 Example Records")
+    assert not _license_allows_download(None)
 
 
 def _result(
@@ -25,10 +37,22 @@ def _result(
 def test_music_search_merges_sources_and_deduplicates() -> None:
     service = OpenMusicService()
     service._search_archive = lambda _q, _l: [  # type: ignore[method-assign]
-        _result("internet_archive:1", "Shared Song", "internet_archive", "Archive", can_download=True)
+        _result(
+            "internet_archive:1",
+            "Shared Song",
+            "internet_archive",
+            "Archive",
+            can_download=True,
+        )
     ]
     service._search_commons = lambda _q, _l: [  # type: ignore[method-assign]
-        _result("wikimedia_commons:2", "Commons Song", "wikimedia_commons", "Commons", can_download=True)
+        _result(
+            "wikimedia_commons:2",
+            "Commons Song",
+            "wikimedia_commons",
+            "Commons",
+            can_download=True,
+        )
     ]
     service._search_audius = lambda _q, _l: [  # type: ignore[method-assign]
         _result("audius:3", "Audius Song", "audius", "Audius")
@@ -50,3 +74,52 @@ def test_music_search_merges_sources_and_deduplicates() -> None:
     }
     assert sum(item.title == "Shared Song" for item in results) == 1
     assert next(item for item in results if item.title == "Shared Song").can_download
+
+
+def test_music_source_failures_are_reported_and_not_cached() -> None:
+    service = OpenMusicService()
+    service._search_archive = lambda _q, _l: [  # type: ignore[method-assign]
+        _result("internet_archive:1", "Available", "internet_archive", "Archive")
+    ]
+    service._search_commons = lambda _q, _l: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("provider down")
+    )
+    service._search_audius = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_musicbrainz = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_itunes = lambda _q, _l: []  # type: ignore[method-assign]
+
+    results = service.search("test")
+    statuses = {item.source: item for item in service.source_statuses()}
+
+    assert results
+    assert statuses["internet_archive"].available is True
+    assert statuses["wikimedia_commons"].available is False
+    assert "RuntimeError" in (statuses["wikimedia_commons"].detail or "")
+    assert service._cache == {}
+
+
+def test_same_music_query_uses_single_flight() -> None:
+    service = OpenMusicService()
+    calls = 0
+
+    def archive(_query, _limit):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        return [
+            _result(
+                "internet_archive:1", "Single flight", "internet_archive", "Archive"
+            )
+        ]
+
+    service._search_archive = archive  # type: ignore[method-assign]
+    service._search_commons = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_audius = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_musicbrainz = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_itunes = lambda _q, _l: []  # type: ignore[method-assign]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.search, "same query")
+        second = executor.submit(service.search, "same query")
+        assert first.result() == second.result()
+    assert calls == 1

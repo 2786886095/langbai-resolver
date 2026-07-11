@@ -1,20 +1,22 @@
 {
-  "version": "1.0.8",
-  "notes": "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库。",
-  "published_at": "2026-07-10T00:00:00Z",
+  "version": "1.0.9",
+  "notes": "解析、下载、更新、安全性与跨平台兼容性改进。",
+  "published_at": "2026-07-11T00:00:00Z",
   "platforms": {
     "windows": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Setup.exe",
-      "sha256": ""
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.0.9/langbai-resolver-Setup.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 123456789,
+      "signing_certificate_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "android": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Android.apk"
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.0.9/langbai-resolver-Android.apk"
     },
     "ios": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-iOS.ipa"
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.0.9/langbai-resolver-iOS.ipa"
     },
     "web": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/latest/download/langbai-resolver-Web.zip"
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.0.9/langbai-resolver-Web.zip"
     }
   }
 }

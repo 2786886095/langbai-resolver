@@ -9,18 +9,22 @@ class DetectedLink {
   final DetectedLinkKind kind;
 
   String get label => switch (kind) {
-        DetectedLinkKind.web => '网页媒体链接',
-        DetectedLinkKind.direct => '媒体直链',
-        DetectedLinkKind.magnet => '磁力链接',
-        DetectedLinkKind.torrent => '种子链接',
-      };
+    DetectedLinkKind.web => '网页媒体链接',
+    DetectedLinkKind.direct => '媒体直链',
+    DetectedLinkKind.magnet => '磁力链接',
+    DetectedLinkKind.torrent => '种子链接',
+  };
 }
 
 class LinkDetector {
-  static final _urlPattern =
-      RegExp(r'''https?://[^\s<>"']+''', caseSensitive: false);
-  static final _magnetPattern =
-      RegExp(r'''magnet:\?xt=urn:[^\s<>"']+''', caseSensitive: false);
+  static final _urlPattern = RegExp(
+    r'''https?://[^\s<>"']+''',
+    caseSensitive: false,
+  );
+  static final _magnetPattern = RegExp(
+    r'''magnet:\?xt=urn:[^\s<>"']+''',
+    caseSensitive: false,
+  );
   static const _directExtensions = {
     'mp4',
     'mkv',
@@ -39,7 +43,7 @@ class LinkDetector {
     '7z',
     'rar',
     'pdf',
-    'iso'
+    'iso',
   };
 
   Future<DetectedLink?> readClipboard() async {

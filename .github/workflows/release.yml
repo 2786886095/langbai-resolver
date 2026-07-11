@@ -6,59 +6,142 @@ on:
       version:
         description: Release version without v prefix
         required: true
-        default: 1.0.8
+      web_api_base_url:
+        description: Public HTTPS API base URL embedded in the Web build
+        required: false
+        default: ""
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: langbai-release
+  cancel-in-progress: false
 
 env:
+  RELEASE_VERSION_INPUT: ${{ inputs.version }}
   UPDATE_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
+  WEB_API_BASE_URL: ${{ inputs.web_api_base_url || vars.WEB_API_BASE_URL }}
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  quality:
+    name: Test release inputs and application code
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: "3.44.0"
           channel: stable
-          cache: true
-      - shell: pwsh
-        run: choco install innosetup ffmpeg aria2 -y --no-progress
-      - name: Build langbai Windows Setup
+      - name: Validate release version
+        run: python scripts/resolve_release_version.py --pubspec client/pubspec.yaml --github-env "$GITHUB_ENV"
+      - name: Test release tooling
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Test backend
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-dev.lock
+          python -m pytest backend/tests -q
+      - name: Analyze and test Flutter client
+        working-directory: client
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  windows:
+    name: Build, sign and smoke-test Windows Setup
+    needs: quality
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: "3.44.0"
+          channel: stable
+      - name: Validate release version
+        run: python scripts/resolve_release_version.py --pubspec client/pubspec.yaml --github-env "$env:GITHUB_ENV"
+      - name: Install pinned packaging tools
         shell: pwsh
         run: |
-          $version = if ("${{ inputs.version }}") { "${{ inputs.version }}" } else { $env:GITHUB_REF_NAME.TrimStart("v") }
-          & ./scripts/build_windows_setup.ps1 -Version $version -UpdateManifestUrl $env:UPDATE_MANIFEST_URL
-      - uses: actions/upload-artifact@v4
+          choco install innosetup --version=6.7.1 -y --no-progress
+          choco install ffmpeg --version=8.1.2 -y --no-progress
+          choco install aria2 --version=1.37.0 -y --no-progress
+      - name: Decode Windows signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)) {
+            throw 'WINDOWS_SIGNING_CERTIFICATE_BASE64 is required for official releases.'
+          }
+          [IO.File]::WriteAllBytes(
+            (Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx'),
+            [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
+          )
+      - name: Build signed langbai Windows Setup
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: >-
+          & ./scripts/build_windows_setup.ps1
+          -Version $env:RELEASE_VERSION
+          -UpdateManifestUrl $env:UPDATE_MANIFEST_URL
+          -SigningCertificatePath (Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx')
+          -SigningCertificatePassword $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD
+          -RequireSignedInstaller
+      - name: Smoke-test signed Setup
+        shell: pwsh
+        run: >-
+          & ./scripts/test_windows_setup.ps1
+          -SetupPath ./dist/langbai-resolver-Setup.exe
+          -ExpectedSignerSha256 (Get-Content ./dist/windows-signing-cert-sha256.txt -Raw)
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx') -Force -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows
-          path: dist/langbai-resolver-Setup.exe
+          path: |
+            dist/langbai-resolver-Setup.exe
+            dist/windows-signing-cert-sha256.txt
           if-no-files-found: error
+          retention-days: 7
 
   android:
+    name: Build signed Android packages
+    needs: quality
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.44.0"
           channel: stable
-          cache: true
+      - name: Validate release version
+        run: python ../scripts/resolve_release_version.py --pubspec pubspec.yaml --github-env "$GITHUB_ENV"
       - name: Configure persistent Android release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -71,109 +154,141 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=langbai-release.jks\n' \
             "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_PASSWORD" "$ANDROID_KEY_ALIAS" \
             > android/key.properties
-      - name: Build langbai Android APK
+      - name: Build universal and ABI-specific Android APKs
         run: |
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           flutter pub get
-          flutter test
-          flutter build apk --release --split-per-abi --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk build/langbai-resolver-Android.apk
+          bash ./android/gradlew --project-dir android :app:lintDebug --no-daemon
+          flutter build apk --release --build-name "$RELEASE_BUILD_NAME" --build-number "$RELEASE_BUILD_NUMBER" --dart-define="APP_VERSION=$RELEASE_VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          cp build/app/outputs/flutter-apk/app-release.apk build/langbai-resolver-Android.apk
+          flutter build apk --release --split-per-abi --build-name "$RELEASE_BUILD_NAME" --build-number "$RELEASE_BUILD_NUMBER" --dart-define="APP_VERSION=$RELEASE_VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
           cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk build/langbai-resolver-Android-arm64.apk
           cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk build/langbai-resolver-Android-armv7.apk
           cp build/app/outputs/flutter-apk/app-x86_64-release.apk build/langbai-resolver-Android-x86_64.apk
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
           "$APKSIGNER" verify --print-certs build/langbai-resolver-Android.apk \
             | grep -qi '52e5db5df541b3c974320ffe336299ff886ffcd31cf0fa6aedcc02006ba5c8ff'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-android
           path: client/build/langbai-resolver-Android*.apk
           if-no-files-found: error
+          retention-days: 7
 
   ios:
+    name: Build the existing unsigned iOS package
+    needs: quality
     runs-on: macos-14
     defaults:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: "3.44.0"
           channel: stable
-          cache: true
+      - name: Validate release version
+        run: python ../scripts/resolve_release_version.py --pubspec pubspec.yaml --github-env "$GITHUB_ENV"
       - name: Prepare embedded iOS Python and yt-dlp
         run: bash ../scripts/prepare_ios_local_parser.sh
       - name: Build unsigned langbai IPA
         run: |
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           flutter pub get
-          flutter build ios --release --no-codesign --config-only --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          flutter build ios --release --no-codesign --config-only --build-name "$RELEASE_BUILD_NAME" --build-number "$RELEASE_BUILD_NUMBER" --dart-define="APP_VERSION=$RELEASE_VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
           cd ios
           pod install
           cd ..
-          flutter build ios --release --no-codesign --build-name "$VERSION" --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          flutter build ios --release --no-codesign --build-name "$RELEASE_BUILD_NAME" --build-number "$RELEASE_BUILD_NUMBER" --dart-define="APP_VERSION=$RELEASE_VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
           mkdir -p build/ipa/Payload
           cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
           cd build/ipa
           ditto -c -k --sequesterRsrc --keepParent Payload langbai-resolver-iOS.ipa
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-ios
           path: client/build/ipa/langbai-resolver-iOS.ipa
           if-no-files-found: error
+          retention-days: 7
 
   web:
+    name: Build Web client for the configured public API
+    if: ${{ inputs.web_api_base_url != '' || vars.WEB_API_BASE_URL != '' }}
+    needs: quality
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: "3.44.0"
           channel: stable
-          cache: true
+      - name: Validate release configuration
+        run: |
+          python ../scripts/resolve_release_version.py --pubspec pubspec.yaml --github-env "$GITHUB_ENV"
+          python -c "import os, urllib.parse; u=urllib.parse.urlparse(os.environ.get('WEB_API_BASE_URL','')); assert u.scheme == 'https' and u.netloc, 'WEB_API_BASE_URL must be a public HTTPS URL'"
       - name: Build langbai Web package
         run: |
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           flutter pub get
-          flutter build web --release --dart-define="APP_VERSION=$VERSION" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+          flutter build web --release --dart-define="APP_VERSION=$RELEASE_VERSION" --dart-define="API_BASE_URL=$WEB_API_BASE_URL" --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
           cd build/web
           zip -r ../langbai-resolver-Web.zip .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-web
           path: client/build/langbai-resolver-Web.zip
           if-no-files-found: error
+          retention-days: 7
 
   publish:
-    needs: [windows, android, ios, web]
+    name: Publish immutable release assets
+    needs: [quality, windows, android, ios, web]
+    if: >-
+      ${{ always() &&
+          needs.quality.result == 'success' &&
+          needs.windows.result == 'success' &&
+          needs.android.result == 'success' &&
+          needs.ios.result == 'success' &&
+          (needs.web.result == 'success' || needs.web.result == 'skipped') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required only here to create the GitHub Release and tag.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
-      - name: Create update manifest
+      - name: Validate release version
+        run: python scripts/resolve_release_version.py --pubspec client/pubspec.yaml --github-env "$GITHUB_ENV"
+      - name: Reject non-monotonic releases
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          python scripts/create_update_manifest.py --version "$VERSION" --repository "$GITHUB_REPOSITORY" --notes "手机端新增保存到文件或相册，视频和图片可直接写入系统照片库。" --assets release-assets --output release-assets/update-manifest.json
+          LATEST_TAG="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "$LATEST_TAG" ]; then
+            python scripts/resolve_release_version.py --input "$RELEASE_VERSION" --newer-than "$LATEST_TAG" --pubspec client/pubspec.yaml
+          fi
+      - name: Create immutable update manifest
+        run: >-
+          python scripts/create_update_manifest.py
+          --version "$RELEASE_VERSION"
+          --repository "$GITHUB_REPOSITORY"
+          --notes "稳定性、安全性、下载与平台兼容性改进。"
+          --assets release-assets
+          --output release-assets/update-manifest.json
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ inputs.version }}"
           TAG="$GITHUB_REF_NAME"
-          if [ -z "$VERSION" ]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            TAG="v$VERSION"
-          fi
-          gh release create "$TAG" release-assets/* --target "$GITHUB_SHA" --title "langbai解析 $VERSION" --generate-notes
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then TAG="v$RELEASE_VERSION"; fi
+          gh release create "$TAG" release-assets/* --target "$GITHUB_SHA" --title "langbai解析 $RELEASE_VERSION" --generate-notes

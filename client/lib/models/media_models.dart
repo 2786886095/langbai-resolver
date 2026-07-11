@@ -90,7 +90,7 @@ class MediaInfo {
   final List<String> warnings;
 }
 
-enum JobState { queued, running, completed, failed }
+enum JobState { queued, running, completed, failed, cancelled }
 
 class DownloadJob {
   const DownloadJob({
@@ -119,6 +119,18 @@ class DownloadJob {
       downloadUrl: json['download_url'] as String?,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'state': state.name,
+    'progress': progress,
+    if (filename != null) 'filename': filename,
+    if (error != null) 'error': error,
+    if (speedBytesPerSecond != null)
+      'speed_bytes_per_second': speedBytesPerSecond,
+    if (etaSeconds != null) 'eta_seconds': etaSeconds,
+    if (downloadUrl != null) 'download_url': downloadUrl,
+  };
 
   final String id;
   final JobState state;

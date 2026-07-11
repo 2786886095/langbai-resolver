@@ -5,14 +5,22 @@ import 'package:media_harbor/services/update_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  setUp(() => SharedPreferences.setMockInitialValues({
-        'automatic_update_checks_enabled': false,
-      }));
+  setUp(
+    () => SharedPreferences.setMockInitialValues({
+      'automatic_update_checks_enabled': false,
+    }),
+  );
 
   test('compares update versions numerically', () {
     expect(compareVersions('1.10.0', '1.9.9'), greaterThan(0));
     expect(compareVersions('2.0.0', '2.0.0+8'), 0);
     expect(compareVersions('1.0.0', '1.0.1'), lessThan(0));
+    expect(compareVersions('1.0.0', '1.0.0-rc.1'), greaterThan(0));
+    expect(compareVersions('1.0.0-rc.2', '1.0.0-rc.10'), lessThan(0));
+    expect(compareVersions('1.0.0-beta.11', '1.0.0-rc.1'), lessThan(0));
+    expect(() => compareVersions('1.0', '1.0.0'), throwsFormatException);
+    expect(() => compareVersions('1.0.0-01', '1.0.0'), throwsFormatException);
+    expect(() => compareVersions('1.0.0+!', '1.0.0'), throwsFormatException);
   });
 
   testWidgets('renders the resolver home screen', (tester) async {
@@ -27,8 +35,9 @@ void main() {
     expect(find.text('B站最高画质'), findsOneWidget);
   });
 
-  testWidgets('fits a narrow phone viewport without layout exceptions',
-      (tester) async {
+  testWidgets('fits a narrow phone viewport without layout exceptions', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -41,6 +50,44 @@ void main() {
     expect(find.text('识别链接'), findsOneWidget);
   });
 
+  testWidgets('supports a small phone at 200 percent text scale', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+    await tester.pumpWidget(const LangbaiResolverApp());
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('工具').last);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('stacks the Bilibili login action below its copy on phones', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(const LangbaiResolverApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('解析').first);
+    await tester.pumpAndSettle();
+
+    final titleRect = tester.getRect(find.text('B站最高画质'));
+    final actionRect = tester.getRect(find.text('扫码登录'));
+    expect(actionRect.top, greaterThan(titleRect.bottom));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('shows automatic update controls in settings', (tester) async {
     await tester.pumpWidget(const LangbaiResolverApp());
     await tester.pumpAndSettle();
@@ -50,8 +97,10 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.0.8 · 全平台支持检测'), findsOneWidget);
+    expect(find.text('当前版本 1.0.9 · 按当前平台检查'), findsOneWidget);
     expect(find.text('默认保存路径'), findsOneWidget);
+    expect(find.text('识别剪贴板链接'), findsOneWidget);
+    expect(find.text('高级工具服务'), findsOneWidget);
   });
 
   testWidgets('shows the GitHub repository in about', (tester) async {

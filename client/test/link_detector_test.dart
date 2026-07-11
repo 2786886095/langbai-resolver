@@ -1,9 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_harbor/services/link_detector.dart';
 
-const douyinShareText = '3.05 复制打开抖音，看看【樱梨梨的作品】他们走不了了 '
+const douyinShareText =
+    '3.05 复制打开抖音，看看【樱梨梨的作品】他们走不了了 '
     '# 瓦是大明星 # 瓦赛来了 # 暮... '
     'https://v.douyin.com/9AgsTehs2gM/ C@H.Vl :1pm 10/02 Agb:/';
+const kuaishouShareText =
+    'https://v.kuaishou.com/Jn5E7UbF 一块肉做5个菜！'
+    '"生活就是要吃好喝好没有烦恼 "牛肋条 "深夜放毒';
 
 void main() {
   test('extracts the URL from a complete Douyin share message', () {
@@ -21,6 +25,13 @@ void main() {
     expect(
       LinkDetector.extractHttpUrl('看看 https://example.com/video，'),
       'https://example.com/video',
+    );
+  });
+
+  test('extracts the URL from a complete Kuaishou share message', () {
+    expect(
+      LinkDetector.extractHttpUrl(kuaishouShareText),
+      'https://v.kuaishou.com/Jn5E7UbF',
     );
   });
 }

@@ -2,17 +2,28 @@ class UpdatePlatformRelease {
   const UpdatePlatformRelease({
     required this.url,
     this.sha256 = '',
+    this.sizeBytes,
+    this.signingCertificateSha256 = '',
   });
 
   factory UpdatePlatformRelease.fromJson(Map<String, dynamic> json) {
     return UpdatePlatformRelease(
       url: json['url']?.toString().trim() ?? '',
       sha256: json['sha256']?.toString().trim() ?? '',
+      sizeBytes: switch (json['size_bytes']) {
+        final int value => value,
+        final num value => value.toInt(),
+        _ => null,
+      },
+      signingCertificateSha256:
+          json['signing_certificate_sha256']?.toString().trim() ?? '',
     );
   }
 
   final String url;
   final String sha256;
+  final int? sizeBytes;
+  final String signingCertificateSha256;
 }
 
 class UpdateManifest {
@@ -30,7 +41,8 @@ class UpdateManifest {
       for (final entry in rawPlatforms.entries) {
         if (entry.value is Map<String, dynamic>) {
           platforms[entry.key.toLowerCase()] = UpdatePlatformRelease.fromJson(
-              entry.value as Map<String, dynamic>);
+            entry.value as Map<String, dynamic>,
+          );
         }
       }
     }

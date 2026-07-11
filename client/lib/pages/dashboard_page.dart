@@ -40,6 +40,16 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    final hour = DateTime.now().hour;
+    final greeting = hour < 6
+        ? '夜深了'
+        : hour < 11
+        ? '早上好'
+        : hour < 14
+        ? '中午好'
+        : hour < 18
+        ? '下午好'
+        : '晚上好';
     return SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(26, 28, 26, 42),
@@ -50,15 +60,15 @@ class _DashboardPageState extends State<DashboardPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  '晚上好，欢迎使用 langbai解析',
+                  '$greeting，欢迎使用 langbai解析',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -.4,
-                      ),
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -.4,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '复制链接后会自动解析，也可以在这里手动粘贴',
+                  '手动粘贴链接开始；也可在设置中开启剪贴板识别提示',
                   style: TextStyle(color: context.palette.textMuted),
                 ),
                 const SizedBox(height: 24),
@@ -105,12 +115,15 @@ class _ManualLinkPanel extends StatelessWidget {
             final form = Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('粘贴链接开始',
-                    style:
-                        TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                const Text(
+                  '粘贴链接开始',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
                 const SizedBox(height: 7),
-                Text('支持网页媒体、音视频直链和公开图片',
-                    style: TextStyle(color: context.palette.textMuted)),
+                Text(
+                  '支持网页媒体、音视频直链和公开图片',
+                  style: TextStyle(color: context.palette.textMuted),
+                ),
                 const SizedBox(height: 20),
                 TextField(
                   controller: controller,
@@ -121,16 +134,18 @@ class _ManualLinkPanel extends StatelessWidget {
                     hintText: 'https://…',
                     prefixIcon: const Icon(Icons.link_rounded),
                     suffixIcon: IconButton(
-                        tooltip: '粘贴',
-                        onPressed: onPaste,
-                        icon: const Icon(Icons.content_paste_rounded)),
+                      tooltip: '粘贴',
+                      onPressed: onPaste,
+                      icon: const Icon(Icons.content_paste_rounded),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
-                    onPressed: onSubmit,
-                    icon: const Icon(Icons.auto_awesome_rounded),
-                    label: const Text('识别链接')),
+                  onPressed: onSubmit,
+                  icon: const Icon(Icons.auto_awesome_rounded),
+                  label: const Text('识别链接'),
+                ),
               ],
             );
             if (compact) return form;
@@ -140,8 +155,11 @@ class _ManualLinkPanel extends StatelessWidget {
                 const SizedBox(width: 28),
                 Expanded(
                   flex: 3,
-                  child: Image.asset('assets/images/langbai_mascot.png',
-                      height: 280, fit: BoxFit.contain),
+                  child: Image.asset(
+                    'assets/images/langbai_mascot.png',
+                    height: 280,
+                    fit: BoxFit.contain,
+                  ),
                 ),
               ],
             );
@@ -171,8 +189,8 @@ class _QuickTools extends StatelessWidget {
         final columns = constraints.maxWidth >= 900
             ? 5
             : constraints.maxWidth >= 560
-                ? 3
-                : 1;
+            ? 3
+            : 1;
         final width = (constraints.maxWidth - (columns - 1) * 10) / columns;
         return Wrap(
           spacing: 10,
@@ -189,23 +207,31 @@ class _QuickTools extends StatelessWidget {
                       padding: const EdgeInsets.all(15),
                       child: Row(
                         children: [
-                          Icon(tool.$2,
-                              color: Theme.of(context).colorScheme.primary),
+                          Icon(
+                            tool.$2,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
                           const SizedBox(width: 11),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(tool.$3,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w700)),
+                                Text(
+                                  tool.$3,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
                                 const SizedBox(height: 3),
-                                Text(tool.$4,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        color: context.palette.textMuted,
-                                        fontSize: 11)),
+                                Text(
+                                  tool.$4,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: context.palette.textMuted,
+                                    fontSize: 11,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -238,8 +264,11 @@ class _RecentTasks extends StatelessWidget {
             child: Row(
               children: [
                 const Expanded(
-                    child: Text('最近任务',
-                        style: TextStyle(fontWeight: FontWeight.w800))),
+                  child: Text(
+                    '最近任务',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
                 TextButton(onPressed: onShowAll, child: const Text('全部任务')),
               ],
             ),
@@ -248,14 +277,21 @@ class _RecentTasks extends StatelessWidget {
           if (records.isEmpty)
             Padding(
               padding: const EdgeInsets.all(26),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 10,
+                runSpacing: 6,
                 children: [
-                  Icon(Icons.download_done_rounded,
-                      color: context.palette.textMuted),
-                  const SizedBox(width: 10),
-                  Text('还没有下载任务',
-                      style: TextStyle(color: context.palette.textMuted)),
+                  Icon(
+                    Icons.download_done_rounded,
+                    color: context.palette.textMuted,
+                  ),
+                  Text(
+                    '还没有下载任务',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: context.palette.textMuted),
+                  ),
                 ],
               ),
             )
@@ -285,17 +321,22 @@ class _TaskRow extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-              completed
-                  ? Icons.check_circle_outline_rounded
-                  : Icons.downloading_rounded,
-              color: completed
-                  ? context.palette.success
-                  : Theme.of(context).colorScheme.primary),
+            completed
+                ? Icons.check_circle_outline_rounded
+                : Icons.downloading_rounded,
+            color: completed
+                ? context.palette.success
+                : Theme.of(context).colorScheme.primary,
+          ),
           const SizedBox(width: 12),
           Expanded(
-              flex: 4,
-              child: Text(record.title,
-                  maxLines: 1, overflow: TextOverflow.ellipsis)),
+            flex: 4,
+            child: Text(
+              record.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           const SizedBox(width: 12),
           Expanded(
             flex: 3,
@@ -307,9 +348,12 @@ class _TaskRow extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           SizedBox(
-              width: 58,
-              child: Text('${(job.progress * 100).round()}%',
-                  textAlign: TextAlign.end)),
+            width: 58,
+            child: Text(
+              '${(job.progress * 100).round()}%',
+              textAlign: TextAlign.end,
+            ),
+          ),
         ],
       ),
     );

@@ -4,16 +4,35 @@ import html
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from threading import Lock
+from threading import Event, Lock
 from urllib.parse import quote
 
 import httpx
 
-from app.models import MusicFile, MusicSearchResult
+from app.models import MusicFile, MusicSearchResult, MusicSourceStatus
 
 
-_USER_AGENT = "langbai-resolver/1.0.8 (https://github.com/2786886095/langbai-resolver)"
+_USER_AGENT = "langbai-resolver/1.0.9 (https://github.com/2786886095/langbai-resolver)"
+
+
+def _license_allows_download(value: object) -> bool:
+    license_text = _plain_text(value)
+    if not license_text:
+        return False
+    normalized = license_text.casefold().replace("_", " ")
+    return any(
+        marker in normalized
+        for marker in (
+            "creativecommons.org/licenses/",
+            "creativecommons.org/publicdomain/",
+            "public domain",
+            "cc0",
+            "cc by",
+            "cc-by",
+        )
+    )
 
 
 def _plain_text(value: object) -> str | None:
@@ -33,6 +52,12 @@ def _metadata_value(metadata: object, key: str) -> str | None:
     return _plain_text(value)
 
 
+@dataclass(slots=True)
+class _SearchFlight:
+    event: Event = field(default_factory=Event)
+    results: tuple[MusicSearchResult, ...] | None = None
+
+
 class OpenMusicService:
     """Aggregates legal catalog metadata and artist-authorized downloads."""
 
@@ -50,6 +75,27 @@ class OpenMusicService:
         self._audius_api_key = audius_api_key
         self._cache: dict[str, tuple[float, tuple[MusicSearchResult, ...]]] = {}
         self._cache_lock = Lock()
+        self._flights: dict[str, _SearchFlight] = {}
+        self._status_lock = Lock()
+        initial_labels = {
+            "internet_archive": "Internet Archive",
+            "wikimedia_commons": "Wikimedia Commons",
+            "audius": "Audius",
+            "apple_music": "Apple Music",
+            "musicbrainz": "MusicBrainz",
+        }
+        if jamendo_client_id:
+            initial_labels["jamendo"] = "Jamendo"
+        self._statuses: dict[str, MusicSourceStatus] = {
+            name: MusicSourceStatus(
+                source=name,
+                source_label=label,
+                available=False,
+                detail="尚未执行查询",
+                checked_at=0,
+            )
+            for name, label in initial_labels.items()
+        }
 
     def search(self, query: str, limit: int = 60) -> list[MusicSearchResult]:
         query = query.strip()
@@ -61,6 +107,16 @@ class OpenMusicService:
             cached = self._cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < 300:
                 return list(cached[1])
+            flight = self._flights.get(cache_key)
+            if flight is None:
+                flight = _SearchFlight()
+                self._flights[cache_key] = flight
+                owns_flight = True
+            else:
+                owns_flight = False
+        if not owns_flight:
+            flight.event.wait(timeout=30)
+            return list(flight.results or ())
         per_source = min(max(limit // 3, 12), 24)
         providers = {
             "internet_archive": self._search_archive,
@@ -73,6 +129,16 @@ class OpenMusicService:
             providers["jamendo"] = self._search_jamendo
 
         buckets: dict[str, list[MusicSearchResult]] = {}
+        checked_at = time.time()
+        labels = {
+            "internet_archive": "Internet Archive",
+            "wikimedia_commons": "Wikimedia Commons",
+            "jamendo": "Jamendo",
+            "audius": "Audius",
+            "apple_music": "Apple Music",
+            "musicbrainz": "MusicBrainz",
+        }
+        statuses: dict[str, MusicSourceStatus] = {}
         with ThreadPoolExecutor(max_workers=len(providers)) as executor:
             futures = {
                 executor.submit(search, query, per_source): name
@@ -82,8 +148,24 @@ class OpenMusicService:
                 name = futures[future]
                 try:
                     buckets[name] = future.result()
-                except Exception:
+                    statuses[name] = MusicSourceStatus(
+                        source=name,
+                        source_label=labels[name],
+                        available=True,
+                        result_count=len(buckets[name]),
+                        checked_at=checked_at,
+                    )
+                except Exception as exc:
                     buckets[name] = []
+                    statuses[name] = MusicSourceStatus(
+                        source=name,
+                        source_label=labels[name],
+                        available=False,
+                        detail=f"请求失败（{type(exc).__name__}）",
+                        checked_at=checked_at,
+                    )
+        with self._status_lock:
+            self._statuses = statuses
 
         order = [
             "internet_archive",
@@ -120,12 +202,21 @@ class OpenMusicService:
                     break
             if not added:
                 break
+        if statuses and all(status.available for status in statuses.values()):
+            with self._cache_lock:
+                if len(self._cache) >= 64:
+                    oldest = min(self._cache, key=lambda key: self._cache[key][0])
+                    self._cache.pop(oldest, None)
+                self._cache[cache_key] = (time.monotonic(), tuple(merged))
         with self._cache_lock:
-            if len(self._cache) >= 64:
-                oldest = min(self._cache, key=lambda key: self._cache[key][0])
-                self._cache.pop(oldest, None)
-            self._cache[cache_key] = (time.monotonic(), tuple(merged))
+            flight.results = tuple(merged)
+            flight.event.set()
+            self._flights.pop(cache_key, None)
         return merged
+
+    def source_statuses(self) -> list[MusicSourceStatus]:
+        with self._status_lock:
+            return [item.model_copy(deep=True) for item in self._statuses.values()]
 
     def files(self, identifier: str) -> list[MusicFile]:
         provider, separator, value = identifier.partition(":")
@@ -146,7 +237,15 @@ class OpenMusicService:
         term = re.sub(r'[()\[\]{}:\\"]+', " ", query).strip()
         params = {
             "q": f"mediatype:audio AND ({term})",
-            "fl[]": ["identifier", "title", "creator", "year"],
+            "fl[]": [
+                "identifier",
+                "title",
+                "creator",
+                "year",
+                "licenseurl",
+                "rights",
+                "access-restricted-item",
+            ],
             "rows": str(limit),
             "page": "1",
             "output": "json",
@@ -165,6 +264,14 @@ class OpenMusicService:
             creator = item.get("creator")
             if isinstance(creator, list):
                 creator = ", ".join(str(value) for value in creator[:3])
+            license_value = str(
+                item.get("licenseurl") or item.get("rights") or ""
+            ).strip()
+            restricted = str(item.get("access-restricted-item") or "").lower() in {
+                "true",
+                "1",
+                "yes",
+            }
             results.append(
                 MusicSearchResult(
                     identifier=f"internet_archive:{identifier}",
@@ -174,8 +281,9 @@ class OpenMusicService:
                     item_url=f"https://archive.org/details/{quote(identifier)}",
                     source="internet_archive",
                     source_label="Internet Archive",
-                    can_download=True,
-                    license="开放授权 / 公共领域（以资源页为准）",
+                    can_download=_license_allows_download(license_value)
+                    and not restricted,
+                    license=license_value or "许可状态未核验，请查看资源页",
                 )
             )
         return results
@@ -357,16 +465,21 @@ class OpenMusicService:
                     ),
                     source="wikimedia_commons",
                     source_label="Wikimedia Commons",
-                    can_download=True,
+                    can_download=_license_allows_download(
+                        _metadata_value(metadata, "LicenseShortName")
+                        or _metadata_value(metadata, "UsageTerms")
+                    ),
                     preview_url=str(info.get("url") or "") or None,
                     license=_metadata_value(metadata, "LicenseShortName")
-                    or _metadata_value(metadata, "UsageTerms"),
+                    or _metadata_value(metadata, "UsageTerms")
+                    or "许可状态未核验，请查看资源页",
                 )
             )
         return results
 
     def _search_jamendo(self, query: str, limit: int) -> list[MusicSearchResult]:
-        assert self._jamendo_client_id
+        if not self._jamendo_client_id:
+            return []
         params = {
             "client_id": self._jamendo_client_id,
             "format": "json",
@@ -420,9 +533,15 @@ class OpenMusicService:
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
             response = client.get(f"https://archive.org/metadata/{quote(identifier)}")
             response.raise_for_status()
+        payload = response.json()
+        metadata = payload.get("metadata") or {}
+        if not _license_allows_download(
+            metadata.get("licenseurl") or metadata.get("rights")
+        ):
+            raise ValueError("该资源未声明可公开下载的许可，请前往来源页核验")
         files: list[MusicFile] = []
         preferred = {"flac", "wave", "wav", "24bit flac", "vbr mp3", "mp3"}
-        for item in response.json().get("files", []):
+        for item in payload.get("files", []):
             name = str(item.get("name") or "")
             file_format = str(item.get("format") or "")
             suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -459,7 +578,7 @@ class OpenMusicService:
             "format": "json",
             "pageids": page_id,
             "prop": "imageinfo",
-            "iiprop": "url|mime|size",
+            "iiprop": "url|mime|size|extmetadata",
         }
         with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
             response = client.get(
@@ -471,6 +590,12 @@ class OpenMusicService:
         if not info_items:
             return []
         info = info_items[0]
+        metadata = info.get("extmetadata")
+        if not _license_allows_download(
+            _metadata_value(metadata, "LicenseShortName")
+            or _metadata_value(metadata, "UsageTerms")
+        ):
+            raise ValueError("该资源未声明可公开下载的许可，请前往来源页核验")
         url = str(info.get("url") or "")
         if not url:
             return []

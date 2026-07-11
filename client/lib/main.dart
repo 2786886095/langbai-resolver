@@ -61,10 +61,7 @@ class _LangbaiResolverAppState extends State<LangbaiResolverApp> {
       themeMode: _themeMode,
       theme: LangbaiTheme.light(),
       darkTheme: LangbaiTheme.dark(),
-      home: AppShell(
-        themeMode: _themeMode,
-        onThemeModeChanged: _setThemeMode,
-      ),
+      home: AppShell(themeMode: _themeMode, onThemeModeChanged: _setThemeMode),
     );
   }
 }
