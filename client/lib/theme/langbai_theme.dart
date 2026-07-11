@@ -51,44 +51,47 @@ class LangbaiPalette extends ThemeExtension<LangbaiPalette> {
       textMuted: Color.lerp(textMuted, other.textMuted, t)!,
       success: Color.lerp(success, other.success, t)!,
       warning: Color.lerp(warning, other.warning, t)!,
-      navigationSelected:
-          Color.lerp(navigationSelected, other.navigationSelected, t)!,
+      navigationSelected: Color.lerp(
+        navigationSelected,
+        other.navigationSelected,
+        t,
+      )!,
     );
   }
 }
 
 class LangbaiTheme {
   static ThemeData dark() => _build(
-        brightness: Brightness.dark,
-        primary: const Color(0xFF6076FF),
-        background: const Color(0xFF070D19),
-        surface: const Color(0xFF0E1728),
-        palette: const LangbaiPalette(
-          canvas: Color(0xFF070D19),
-          surfaceRaised: Color(0xFF121E33),
-          border: Color(0xFF263550),
-          textMuted: Color(0xFF91A0BA),
-          success: Color(0xFF5FD8AE),
-          warning: Color(0xFFFFC46B),
-          navigationSelected: Color(0xFF162A58),
-        ),
-      );
+    brightness: Brightness.dark,
+    primary: const Color(0xFF6076FF),
+    background: const Color(0xFF070D19),
+    surface: const Color(0xFF0E1728),
+    palette: const LangbaiPalette(
+      canvas: Color(0xFF070D19),
+      surfaceRaised: Color(0xFF121E33),
+      border: Color(0xFF263550),
+      textMuted: Color(0xFF91A0BA),
+      success: Color(0xFF5FD8AE),
+      warning: Color(0xFFFFC46B),
+      navigationSelected: Color(0xFF162A58),
+    ),
+  );
 
   static ThemeData light() => _build(
-        brightness: Brightness.light,
-        primary: const Color(0xFF3F5FF3),
-        background: const Color(0xFFF7F8FC),
-        surface: Colors.white,
-        palette: const LangbaiPalette(
-          canvas: Color(0xFFF7F8FC),
-          surfaceRaised: Color(0xFFFFFFFF),
-          border: Color(0xFFDCE3F1),
-          textMuted: Color(0xFF66758E),
-          success: Color(0xFF24B889),
-          warning: Color(0xFFB86E16),
-          navigationSelected: Color(0xFFE8EDFF),
-        ),
-      );
+    brightness: Brightness.light,
+    primary: const Color(0xFF3651D4),
+    background: const Color(0xFFF7F8FC),
+    surface: Colors.white,
+    palette: const LangbaiPalette(
+      canvas: Color(0xFFF7F8FC),
+      surfaceRaised: Color(0xFFFFFFFF),
+      border: Color(0xFFDCE3F1),
+      textMuted: Color(0xFF56647C),
+      success: Color(0xFF087F5B),
+      warning: Color(0xFFB86E16),
+      navigationSelected: Color(0xFFE8EDFF),
+    ),
+  );
 
   static ThemeData _build({
     required Brightness brightness,
@@ -97,14 +100,14 @@ class LangbaiTheme {
     required Color surface,
     required LangbaiPalette palette,
   }) {
+    final isDark = brightness == Brightness.dark;
     final colorScheme = ColorScheme.fromSeed(
       seedColor: primary,
       brightness: brightness,
       primary: primary,
       surface: surface,
-      error: const Color(0xFFE45468),
+      error: isDark ? const Color(0xFFFF7B8D) : const Color(0xFFB3261E),
     );
-    final isDark = brightness == Brightness.dark;
     final base = ThemeData(
       useMaterial3: true,
       brightness: brightness,
@@ -123,16 +126,19 @@ class LangbaiTheme {
     return base.copyWith(
       textTheme: base.textTheme.apply(
         bodyColor: isDark ? const Color(0xFFF4F7FF) : const Color(0xFF172033),
-        displayColor:
-            isDark ? const Color(0xFFF4F7FF) : const Color(0xFF172033),
+        displayColor: isDark
+            ? const Color(0xFFF4F7FF)
+            : const Color(0xFF172033),
       ),
       dividerColor: palette.border,
       cardColor: surface,
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: palette.surfaceRaised,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 16,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: palette.border),
@@ -149,8 +155,9 @@ class LangbaiTheme {
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size(48, 52),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
         ),
       ),
@@ -158,8 +165,9 @@ class LangbaiTheme {
         style: OutlinedButton.styleFrom(
           minimumSize: const Size(48, 52),
           side: BorderSide(color: palette.border),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
         ),
       ),

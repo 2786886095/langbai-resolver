@@ -51,6 +51,7 @@ class JobState(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class DownloadJob(BaseModel):
@@ -65,6 +66,7 @@ class DownloadJob(BaseModel):
     eta_seconds: int | None = None
     filename: str | None = None
     error: str | None = None
+    error_code: str | None = None
     created_at: float
     updated_at: float
     download_url: str | None = None
@@ -74,6 +76,8 @@ class HealthResponse(BaseModel):
     status: str
     extractor: str
     ffmpeg_available: bool
+    instance_id: str
+    authenticated: bool = False
 
 
 class SniffRequest(BaseModel):
@@ -122,9 +126,20 @@ class MusicFile(BaseModel):
     download_url: str
 
 
+class MusicSourceStatus(BaseModel):
+    source: str
+    source_label: str
+    available: bool
+    result_count: int = 0
+    detail: str | None = None
+    checked_at: float
+
+
 class UpdatePlatformRelease(BaseModel):
     url: str = ""
     sha256: str = ""
+    size_bytes: int | None = None
+    signing_certificate_sha256: str = ""
 
 
 class UpdateManifest(BaseModel):

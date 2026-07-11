@@ -52,11 +52,11 @@ class BilibiliAccount {
   final String? vipLabel;
 
   Map<String, dynamic> toJson() => {
-        'name': name,
-        'avatar_url': avatarUrl,
-        'user_id': userId,
-        'vip_label': vipLabel,
-      };
+    'name': name,
+    'avatar_url': avatarUrl,
+    'user_id': userId,
+    'vip_label': vipLabel,
+  };
 
   factory BilibiliAccount.fromJson(Map<String, dynamic> json) =>
       BilibiliAccount(
@@ -123,7 +123,8 @@ class BilibiliAuthService {
     final key = data['qrcode_key']?.toString();
     if (payload['code'] != 0 || url == null || key == null) {
       throw BilibiliAuthException(
-          payload['message']?.toString() ?? '无法生成B站登录二维码');
+        payload['message']?.toString() ?? '无法生成B站登录二维码',
+      );
     }
     return BilibiliQrSession(url: url, key: key);
   }
@@ -144,7 +145,8 @@ class BilibiliAuthService {
     final code = (data['code'] as num?)?.toInt();
     if (payload['code'] != 0) {
       throw BilibiliAuthException(
-          payload['message']?.toString() ?? 'B站登录状态查询失败');
+        payload['message']?.toString() ?? 'B站登录状态查询失败',
+      );
     }
     if (code == 86101) {
       return const BilibiliPollResult(BilibiliQrState.waiting);
@@ -186,10 +188,12 @@ class BilibiliAuthService {
     if (cookie == null || !cookie.contains('SESSDATA=')) {
       throw const BilibiliAuthException('尚未登录B站');
     }
-    final response = await http.get(
-      Uri.https('api.bilibili.com', '/x/web-interface/nav'),
-      headers: {..._bilibiliHeaders, 'cookie': cookie},
-    ).timeout(const Duration(seconds: 20));
+    final response = await http
+        .get(
+          Uri.https('api.bilibili.com', '/x/web-interface/nav'),
+          headers: {..._bilibiliHeaders, 'cookie': cookie},
+        )
+        .timeout(const Duration(seconds: 20));
     final payload = _decodeResponse(response);
     final data = Map<String, dynamic>.from(payload['data'] as Map? ?? const {});
     if (payload['code'] != 0 || data['isLogin'] != true) {

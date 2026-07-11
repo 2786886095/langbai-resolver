@@ -5,6 +5,8 @@ import 'package:file_selector/file_selector.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/media_models.dart';
+import 'api_endpoint_policy.dart';
+import 'runtime_environment.dart';
 
 class ApiException implements Exception {
   const ApiException(this.message, {this.code});
@@ -17,18 +19,36 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
-  ApiClient(String baseUrl)
-      : baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+  ApiClient(String baseUrl, {String? instanceToken, http.Client? client})
+    : _client = _NoRedirectClient(client ?? http.Client()),
+      baseUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), ''),
+      _instanceToken = selectInstanceTokenForApi(
+        baseUrl,
+        explicitToken: instanceToken,
+        runtimeToken: langbaiInstanceToken,
+      );
 
   final String baseUrl;
-  final http.Client _client = http.Client();
+  final String _instanceToken;
+  final http.Client _client;
+
+  Map<String, String> get _headers => {
+    if (_instanceToken.isNotEmpty) 'X-Langbai-Instance-Token': _instanceToken,
+  };
+
+  Map<String, String> get downloadHeaders => Map.unmodifiable(_headers);
+
+  Map<String, String> _jsonHeaders() => {
+    ..._headers,
+    'content-type': 'application/json',
+  };
 
   Uri _uri(String path) => Uri.parse('$baseUrl$path');
 
   Future<bool> isHealthy() async {
     try {
       final response = await _client
-          .get(_uri('/api/v1/health'))
+          .get(_uri('/api/v1/health'), headers: _headers)
           .timeout(const Duration(seconds: 3));
       return response.statusCode >= 200 && response.statusCode < 300;
     } on Object {
@@ -40,11 +60,8 @@ class ApiClient {
     final response = await _client
         .post(
           _uri('/api/v1/resolve'),
-          headers: const {'content-type': 'application/json'},
-          body: jsonEncode({
-            'url': url,
-            if (bilibiliCookie != null) 'bilibili_cookie': bilibiliCookie,
-          }),
+          headers: _jsonHeaders(),
+          body: jsonEncode({'url': url, 'bilibili_cookie': ?bilibiliCookie}),
         )
         .timeout(const Duration(seconds: 75));
     return MediaInfo.fromJson(_jsonOrThrow(response));
@@ -54,7 +71,7 @@ class ApiClient {
     final response = await _client
         .post(
           _uri('/api/v1/jobs'),
-          headers: const {'content-type': 'application/json'},
+          headers: _jsonHeaders(),
           body: jsonEncode({'media_id': mediaId, 'option_id': optionId}),
         )
         .timeout(const Duration(seconds: 20));
@@ -63,12 +80,19 @@ class ApiClient {
 
   Future<DownloadJob> getJob(String jobId) async {
     final response = await _client
-        .get(_uri('/api/v1/jobs/$jobId'))
+        .get(_uri('/api/v1/jobs/$jobId'), headers: _headers)
         .timeout(const Duration(seconds: 20));
     return DownloadJob.fromJson(_jsonOrThrow(response));
   }
 
   Uri fileUri(String jobId) => _uri('/api/v1/jobs/$jobId/file');
+
+  Future<DownloadJob> cancelJob(String jobId) async {
+    final response = await _client
+        .delete(_uri('/api/v1/jobs/$jobId'), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    return DownloadJob.fromJson(_jsonOrThrow(response));
+  }
 
   Future<DownloadJob> createToolJob({
     required XFile file,
@@ -77,6 +101,7 @@ class ApiClient {
     int quality = 78,
   }) async {
     final request = http.MultipartRequest('POST', _uri('/api/v1/tools/process'))
+      ..headers.addAll(_headers)
       ..fields['operation'] = operation
       ..fields['output_format'] = outputFormat
       ..fields['quality'] = quality.toString();
@@ -89,8 +114,9 @@ class ApiClient {
         filename: file.name,
       ),
     );
-    final streamed =
-        await _client.send(request).timeout(const Duration(minutes: 10));
+    final streamed = await _client
+        .send(request)
+        .timeout(const Duration(minutes: 10));
     final response = await http.Response.fromStream(streamed);
     return DownloadJob.fromJson(_jsonOrThrow(response));
   }
@@ -106,7 +132,7 @@ class ApiClient {
     final response = await _client
         .post(
           _uri('/api/v1/tools/transfer'),
-          headers: const {'content-type': 'application/json'},
+          headers: _jsonHeaders(),
           body: jsonEncode({'sources': sources}),
         )
         .timeout(const Duration(seconds: 20));
@@ -114,8 +140,8 @@ class ApiClient {
   }
 
   Future<DownloadJob> createTorrentFile(XFile file) async {
-    final request =
-        http.MultipartRequest('POST', _uri('/api/v1/tools/torrent'));
+    final request = http.MultipartRequest('POST', _uri('/api/v1/tools/torrent'))
+      ..headers.addAll(_headers);
     final length = await file.length();
     request.files.add(
       http.MultipartFile(
@@ -125,8 +151,9 @@ class ApiClient {
         filename: file.name,
       ),
     );
-    final streamed =
-        await _client.send(request).timeout(const Duration(minutes: 2));
+    final streamed = await _client
+        .send(request)
+        .timeout(const Duration(minutes: 2));
     final response = await http.Response.fromStream(streamed);
     return DownloadJob.fromJson(_jsonOrThrow(response));
   }
@@ -135,7 +162,7 @@ class ApiClient {
     final response = await _client
         .post(
           _uri('/api/v1/sniff'),
-          headers: const {'content-type': 'application/json'},
+          headers: _jsonHeaders(),
           body: jsonEncode({'url': url}),
         )
         .timeout(const Duration(seconds: 50));
@@ -144,7 +171,10 @@ class ApiClient {
 
   Future<List<MusicSearchResult>> searchMusic(String query) async {
     final response = await _client
-        .get(_uri('/api/v1/music/search?q=${Uri.encodeQueryComponent(query)}'))
+        .get(
+          _uri('/api/v1/music/search?q=${Uri.encodeQueryComponent(query)}'),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 40));
     final data = _listOrThrow(response);
     return data
@@ -154,7 +184,10 @@ class ApiClient {
 
   Future<List<MusicFile>> musicFiles(String identifier) async {
     final response = await _client
-        .get(_uri('/api/v1/music/${Uri.encodeComponent(identifier)}/files'))
+        .get(
+          _uri('/api/v1/music/${Uri.encodeComponent(identifier)}/files'),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 40));
     final data = _listOrThrow(response);
     return data
@@ -163,6 +196,9 @@ class ApiClient {
   }
 
   Map<String, dynamic> _jsonOrThrow(http.Response response) {
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw const ApiException('服务端返回了重定向；为保护访问令牌，客户端不会跟随跳转');
+    }
     Map<String, dynamic> data;
     try {
       data =
@@ -177,6 +213,9 @@ class ApiClient {
   }
 
   List<dynamic> _listOrThrow(http.Response response) {
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw const ApiException('服务端返回了重定向；为保护访问令牌，客户端不会跟随跳转');
+    }
     dynamic data;
     try {
       data = jsonDecode(utf8.decode(response.bodyBytes));
@@ -193,6 +232,22 @@ class ApiClient {
   }
 
   void close() => _client.close();
+}
+
+class _NoRedirectClient extends http.BaseClient {
+  _NoRedirectClient(this._inner);
+
+  final http.Client _inner;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    request.followRedirects = false;
+    request.maxRedirects = 0;
+    return _inner.send(request);
+  }
+
+  @override
+  void close() => _inner.close();
 }
 
 ApiException _apiException(Object? data, int statusCode) {

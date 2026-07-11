@@ -1,5 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.8"
+  #define AppVersion "0.0.0"
+#endif
+#ifndef AppNumericVersion
+  #define AppNumericVersion "0.0.0"
 #endif
 
 #define ProjectRoot SourcePath + "\..\.."
@@ -24,19 +27,25 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+MinVersion=10.0.17763
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 ChangesAssociations=yes
-RestartApplications=no
+RestartApplications=yes
+CloseApplicationsFilter=*.exe,*.dll
 AppMutex=langbaiResolverAppMutex
-VersionInfoVersion={#AppVersion}.0
+SetupLogging=yes
+VersionInfoVersion={#AppNumericVersion}.0
 VersionInfoCompany=langbai
 VersionInfoDescription=langbai解析 Windows 安装程序
 VersionInfoProductName=langbai解析
 VersionInfoProductVersion={#AppVersion}
 
 [Languages]
+#ifdef ChineseLanguageFile
+Name: "chinesesimplified"; MessagesFile: "{#ChineseLanguageFile}"
+#endif
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
@@ -47,6 +56,10 @@ Source: "{#ProjectRoot}\client\build\windows\x64\runner\Release\*"; DestDir: "{a
 
 [InstallDelete]
 Type: files; Name: "{app}\media_harbor.exe"
+Type: filesandordirs; Name: "{app}\backend"
+Type: filesandordirs; Name: "{app}\data\flutter_assets"
+Type: files; Name: "{app}\data\app.so"
+Type: files; Name: "{app}\*.dll"
 
 [Icons]
 Name: "{group}\langbai解析"; Filename: "{app}\{#AppExecutable}"; IconFilename: "{app}\{#AppExecutable}"; IconIndex: 0
@@ -56,4 +69,4 @@ Name: "{autodesktop}\langbai解析"; Filename: "{app}\{#AppExecutable}"; IconFil
 [Run]
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-ClearIconCache"; Flags: runhidden; StatusMsg: "正在刷新应用图标..."
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden
-Filename: "{app}\{#AppExecutable}"; Description: "启动 langbai解析"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExecutable}"; Description: "启动 langbai解析"; Flags: nowait postinstall; Check: not WizardSilent

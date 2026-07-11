@@ -5,9 +5,16 @@ import '../models/media_models.dart';
 import '../theme/langbai_theme.dart';
 
 class DownloadsPage extends StatelessWidget {
-  const DownloadsPage({super.key, required this.records});
+  const DownloadsPage({
+    super.key,
+    required this.records,
+    required this.onClear,
+    required this.onRetry,
+  });
 
   final List<DownloadRecord> records;
+  final VoidCallback onClear;
+  final ValueChanged<DownloadRecord> onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -20,16 +27,28 @@ class DownloadsPage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  '下载任务',
-                  style: Theme.of(context)
-                      .textTheme
-                      .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.w800),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '下载任务',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    if (records.isNotEmpty)
+                      TextButton.icon(
+                        onPressed: onClear,
+                        icon: const Icon(Icons.delete_sweep_outlined),
+                        label: const Text('清空历史'),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 6),
-                Text('查看解析、转换和下载进度',
-                    style: TextStyle(color: context.palette.textMuted)),
+                Text(
+                  '查看解析、转换和下载进度',
+                  style: TextStyle(color: context.palette.textMuted),
+                ),
                 const SizedBox(height: 24),
                 Expanded(
                   child: records.isEmpty
@@ -37,10 +56,14 @@ class DownloadsPage extends StatelessWidget {
                       : LangbaiCard(
                           child: ListView.separated(
                             itemCount: records.length,
-                            separatorBuilder: (_, __) => Divider(
-                                height: 1, color: context.palette.border),
-                            itemBuilder: (context, index) =>
-                                _DownloadTile(record: records[index]),
+                            separatorBuilder: (_, _) => Divider(
+                              height: 1,
+                              color: context.palette.border,
+                            ),
+                            itemBuilder: (context, index) => _DownloadTile(
+                              record: records[index],
+                              onRetry: () => onRetry(records[index]),
+                            ),
                           ),
                         ),
                 ),
@@ -63,15 +86,22 @@ class _EmptyDownloads extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.cloud_download_outlined,
-                  size: 52, color: context.palette.textMuted),
+              Icon(
+                Icons.cloud_download_outlined,
+                size: 52,
+                color: context.palette.textMuted,
+              ),
               const SizedBox(height: 16),
-              const Text('暂无下载任务',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+              const Text(
+                '暂无下载任务',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
               const SizedBox(height: 6),
-              Text('解析链接并选择资源后，任务会显示在这里',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: context.palette.textMuted)),
+              Text(
+                '解析链接并选择资源后，任务会显示在这里',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: context.palette.textMuted),
+              ),
             ],
           ),
         ),
@@ -81,9 +111,10 @@ class _EmptyDownloads extends StatelessWidget {
 }
 
 class _DownloadTile extends StatelessWidget {
-  const _DownloadTile({required this.record});
+  const _DownloadTile({required this.record, required this.onRetry});
 
   final DownloadRecord record;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -93,10 +124,12 @@ class _DownloadTile extends StatelessWidget {
       JobState.running => '下载中',
       JobState.completed => '已完成',
       JobState.failed => '失败',
+      JobState.cancelled => '已取消',
     };
     final stateColor = switch (job.state) {
       JobState.completed => context.palette.success,
       JobState.failed => Theme.of(context).colorScheme.error,
+      JobState.cancelled => context.palette.textMuted,
       _ => Theme.of(context).colorScheme.primary,
     };
     return Padding(
@@ -110,30 +143,50 @@ class _DownloadTile extends StatelessWidget {
               color: Theme.of(context).colorScheme.primaryContainer,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(Icons.downloading_rounded,
-                color: Theme.of(context).colorScheme.primary),
+            child: Icon(
+              Icons.downloading_rounded,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(record.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text(
+                  record.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
                 const SizedBox(height: 4),
-                Text('${record.platform} · ${record.optionLabel}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: context.palette.textMuted, fontSize: 12)),
+                Text(
+                  '${record.platform} · ${record.optionLabel}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
                 const SizedBox(height: 9),
                 LinearProgressIndicator(
                   minHeight: 5,
                   value: job.state == JobState.queued ? null : job.progress,
                   borderRadius: BorderRadius.circular(8),
                 ),
+                if (job.error != null && job.error!.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    job.error!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -141,12 +194,22 @@ class _DownloadTile extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(stateLabel,
-                  style: TextStyle(
-                      color: stateColor, fontWeight: FontWeight.w700)),
+              Text(
+                stateLabel,
+                style: TextStyle(
+                  color: stateColor,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
               const SizedBox(height: 5),
-              Text('${(job.progress * 100).round()}%',
-                  style: TextStyle(color: context.palette.textMuted)),
+              Text(
+                '${(job.progress * 100).round()}%',
+                style: TextStyle(color: context.palette.textMuted),
+              ),
+              if ((job.state == JobState.failed ||
+                      job.state == JobState.cancelled) &&
+                  record.sourceUrl.isNotEmpty)
+                TextButton(onPressed: onRetry, child: const Text('重新解析')),
             ],
           ),
         ],

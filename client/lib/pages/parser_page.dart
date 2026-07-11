@@ -5,13 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models/media_models.dart';
 import '../services/api_client.dart';
+import '../services/api_endpoint_policy.dart';
 import '../services/bilibili_auth_service.dart';
 import '../services/download_saver.dart';
 import '../services/link_detector.dart';
 import '../services/local_media_service.dart';
+import '../services/service_credential_store.dart';
 import '../theme/langbai_theme.dart';
 
 const _defaultApiUrl = String.fromEnvironment(
@@ -20,18 +23,11 @@ const _defaultApiUrl = String.fromEnvironment(
 );
 
 class ParserPage extends StatefulWidget {
-  const ParserPage({
-    super.key,
-    this.initialUrl,
-    this.onJobChanged,
-  });
+  const ParserPage({super.key, this.initialUrl, this.onJobChanged});
 
   final String? initialUrl;
-  final void Function(
-    DownloadJob job,
-    MediaInfo media,
-    MediaOption option,
-  )? onJobChanged;
+  final void Function(DownloadJob job, MediaInfo media, MediaOption option)?
+  onJobChanged;
 
   @override
   State<ParserPage> createState() => _ParserPageState();
@@ -47,6 +43,8 @@ class _ParserPageState extends State<ParserPage> {
   DownloadJob? _job;
   bool _resolving = false;
   bool _saving = false;
+  bool _cancelRequested = false;
+  String? _activeLocalProcessId;
   double _saveProgress = 0;
   String? _error;
   BilibiliAccount? _bilibiliAccount;
@@ -117,19 +115,37 @@ class _ParserPageState extends State<ParserPage> {
 
   Future<void> _logoutBilibili() async {
     await BilibiliAuthService.instance.logout();
-    if (mounted) setState(() => _bilibiliAccount = null);
+    if (LocalMediaService.isSupported) {
+      await LocalMediaService.instance.clearNativeSession();
+    }
+    if (mounted) {
+      setState(() {
+        _bilibiliAccount = null;
+        _media = null;
+        _selected = null;
+        _job = null;
+        _saveProgress = 0;
+        _error = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已退出并清除本机 B站解析缓存')));
+    }
   }
 
   Future<void> _restoreApiUrl() async {
     if (_usesLocalParser) return;
     try {
       final preferences = await SharedPreferences.getInstance();
-      final saved = preferences.getString('api_base_url')?.trim();
+      final saved = normalizeTrustedApiUrl(
+        preferences.getString('api_base_url'),
+      );
+      if (!mounted || saved == null || saved.isEmpty) return;
+      final token = await ServiceCredentialStore.readTokenFor(saved);
       if (!mounted) return;
-      if (saved == null || saved.isEmpty || saved == _api.baseUrl) return;
       _api.close();
       setState(() {
-        _api = ApiClient(saved);
+        _api = ApiClient(saved, instanceToken: token.isEmpty ? null : token);
         _serverController.text = saved;
       });
     } on Object {
@@ -169,6 +185,22 @@ class _ParserPageState extends State<ParserPage> {
       _job = null;
     });
     try {
+      if (!_usesLocalParser) {
+        final serviceUri = Uri.tryParse(_api.baseUrl);
+        final loopback =
+            serviceUri != null &&
+            const {
+              '127.0.0.1',
+              'localhost',
+              '::1',
+            }.contains(serviceUri.host.toLowerCase());
+        if (kIsWeb && loopback) {
+          throw const ApiException('Web 版尚未配置解析服务，请先在设置中填写 HTTPS 服务地址');
+        }
+        if (!await _api.isHealthy()) {
+          throw const ApiException('解析服务未连接或身份校验失败，请检查设置后重试');
+        }
+      }
       final bilibiliCookie = _bilibiliLoginAvailable && _isBilibiliUrl(url)
           ? BilibiliAuthService.instance.cookieHeader
           : null;
@@ -212,6 +244,7 @@ class _ParserPageState extends State<ParserPage> {
     setState(() {
       _error = null;
       _saving = true;
+      _cancelRequested = false;
       _saveProgress = 0;
     });
     try {
@@ -220,11 +253,17 @@ class _ParserPageState extends State<ParserPage> {
         return;
       }
       var job = await _api.createJob(media.mediaId, option.id);
+      final taskDeadline = DateTime.now().add(const Duration(hours: 2));
       if (mounted) {
         setState(() => _job = job);
         widget.onJobChanged?.call(job, media, option);
       }
       while (job.state == JobState.queued || job.state == JobState.running) {
+        if (_cancelRequested) throw const ApiException('任务已取消');
+        if (DateTime.now().isAfter(taskDeadline)) {
+          await _api.cancelJob(job.id);
+          throw TimeoutException('任务超过 2 小时，已自动取消');
+        }
         await Future<void>.delayed(const Duration(milliseconds: 900));
         job = await _api.getJob(job.id);
         if (!mounted) return;
@@ -234,6 +273,9 @@ class _ParserPageState extends State<ParserPage> {
       if (job.state == JobState.failed) {
         throw ApiException(job.error ?? '服务器下载失败');
       }
+      if (job.state == JobState.cancelled) {
+        throw const ApiException('任务已取消');
+      }
       final result = await saveDownload(
         _api.fileUri(job.id),
         job.filename ?? 'media.${option.extension}',
@@ -242,11 +284,13 @@ class _ParserPageState extends State<ParserPage> {
         },
         destination: destination,
         mediaType: option.kind.name,
+        headers: _api.downloadHeaders,
+        isCancelled: () => _cancelRequested,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(result.message)));
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on LocalMediaException catch (error) {
@@ -254,7 +298,12 @@ class _ParserPageState extends State<ParserPage> {
     } on Object catch (error) {
       if (mounted) setState(() => _error = '下载失败：$error');
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _activeLocalProcessId = null;
+        });
+      }
     }
   }
 
@@ -263,13 +312,9 @@ class _ParserPageState extends State<ParserPage> {
     MediaOption option,
     SaveDestination destination,
   ) async {
-    final jobId =
-        'local-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
-    var job = DownloadJob(
-      id: jobId,
-      state: JobState.running,
-      progress: 0,
-    );
+    final jobId = LocalMediaService.instance.createProcessId();
+    _activeLocalProcessId = jobId;
+    var job = DownloadJob(id: jobId, state: JobState.running, progress: 0);
     if (mounted) {
       setState(() => _job = job);
       widget.onJobChanged?.call(job, media, option);
@@ -281,6 +326,7 @@ class _ParserPageState extends State<ParserPage> {
         optionId: option.id,
         kind: option.kind,
         destination: destination,
+        processId: jobId,
         onProgress: (progress) {
           if (!mounted) return;
           job = DownloadJob(
@@ -300,7 +346,7 @@ class _ParserPageState extends State<ParserPage> {
       if (mounted) {
         job = DownloadJob(
           id: jobId,
-          state: JobState.failed,
+          state: _cancelRequested ? JobState.cancelled : JobState.failed,
           progress: job.progress,
           error: error.toString(),
         );
@@ -321,14 +367,42 @@ class _ParserPageState extends State<ParserPage> {
       _saveProgress = 1;
     });
     widget.onJobChanged?.call(job, media, option);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(result.message)));
   }
 
-  Future<SaveDestination?> _chooseSaveDestination(
-    MediaOption option,
-  ) async {
+  Future<void> _cancelDownload() async {
+    if (!_saving || _cancelRequested) return;
+    setState(() => _cancelRequested = true);
+    try {
+      final localId = _activeLocalProcessId;
+      DownloadJob? cancelled;
+      if (_usesLocalParser && localId != null) {
+        await LocalMediaService.instance.cancelDownload(localId);
+        cancelled = DownloadJob(
+          id: localId,
+          state: JobState.cancelled,
+          progress: _job?.progress ?? 0,
+          error: '用户已取消',
+        );
+      } else if (_job != null) {
+        cancelled = await _api.cancelJob(_job!.id);
+      }
+      if (mounted && cancelled != null) {
+        setState(() => _job = cancelled);
+        final media = _media;
+        final option = _selected;
+        if (media != null && option != null) {
+          widget.onJobChanged?.call(cancelled, media, option);
+        }
+      }
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = '取消失败：$error');
+    }
+  }
+
+  Future<SaveDestination?> _chooseSaveDestination(MediaOption option) async {
     if (!_isMobile || option.kind == AssetKind.audio) {
       return SaveDestination.files;
     }
@@ -345,9 +419,9 @@ class _ParserPageState extends State<ParserPage> {
             children: [
               Text(
                 '保存到哪里？',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               Text(
@@ -380,15 +454,15 @@ class _ParserPageState extends State<ParserPage> {
   }
 
   Future<void> _changeApiUrl(String value) async {
-    final normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
-    if (!normalized.startsWith('http://') &&
-        !normalized.startsWith('https://')) {
-      setState(() => _error = '服务地址必须以 http:// 或 https:// 开头');
+    final normalized = normalizeTrustedApiUrl(value);
+    if (normalized == null) {
+      setState(() => _error = '请输入 HTTPS 地址；HTTP 仅允许本机回环地址');
       return;
     }
+    final token = await ServiceCredentialStore.readTokenFor(normalized);
     _api.close();
     setState(() {
-      _api = ApiClient(normalized);
+      _api = ApiClient(normalized, instanceToken: token.isEmpty ? null : token);
       _serverController.text = normalized;
       _error = null;
       _media = null;
@@ -410,7 +484,7 @@ class _ParserPageState extends State<ParserPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('手机请填写运行后端的电脑局域网地址或 HTTPS 域名。'),
+              const Text('远程服务必须使用 HTTPS；HTTP 仅允许同一设备的本机回环地址。'),
               const SizedBox(height: 16),
               TextField(
                 controller: controller,
@@ -459,15 +533,16 @@ class _ParserPageState extends State<ParserPage> {
                           children: [
                             Text(
                               '链接解析',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .headlineSmall
+                              style: Theme.of(context).textTheme.headlineSmall
                                   ?.copyWith(fontWeight: FontWeight.w800),
                             ),
                             const SizedBox(height: 6),
-                            Text('选择视频清晰度、音频、封面或图片',
-                                style: TextStyle(
-                                    color: context.palette.textMuted)),
+                            Text(
+                              '选择视频清晰度、音频、封面或图片',
+                              style: TextStyle(
+                                color: context.palette.textMuted,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -479,8 +554,9 @@ class _ParserPageState extends State<ParserPage> {
                       else
                         IconButton(
                           tooltip: '解析服务设置',
-                          onPressed:
-                              _saving || _resolving ? null : _showSettings,
+                          onPressed: _saving || _resolving
+                              ? null
+                              : _showSettings,
                           icon: const Icon(Icons.tune_rounded),
                         ),
                     ],
@@ -514,16 +590,16 @@ class _ParserPageState extends State<ParserPage> {
             Text(
               '解析公开媒体链接',
               style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: -.6,
-                  ),
+                fontWeight: FontWeight.w900,
+                letterSpacing: -.6,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
               '识别公开的视频、音频、封面与网页图片，按清晰度选择后保存。',
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: context.palette.textMuted,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: context.palette.textMuted),
             ),
             const SizedBox(height: 18),
             const Wrap(
@@ -592,9 +668,9 @@ class _ParserPageState extends State<ParserPage> {
             const SizedBox(height: 14),
             Text(
               '仅用于你有权保存的公开、无 DRM 内容。平台规则变化时需更新服务端解析器。',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: context.palette.textMuted,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: context.palette.textMuted),
             ),
           ],
         ),
@@ -612,9 +688,9 @@ class _ParserPageState extends State<ParserPage> {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: context.palette.border),
       ),
-      child: Row(
-        children: [
-          Container(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final icon = Container(
             width: 40,
             height: 40,
             decoration: BoxDecoration(
@@ -622,43 +698,64 @@ class _ParserPageState extends State<ParserPage> {
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Icon(Icons.tv_rounded, color: Color(0xFFFF6699)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          );
+          final details = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                loggedIn ? account?.name ?? 'B站已登录' : 'B站最高画质',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                loggedIn
+                    ? '${account?.vipLabel?.isNotEmpty == true ? '${account!.vipLabel} · ' : ''}登录会话仅加密保存在本机'
+                    : '扫码登录后解析 1080P、4K、HDR 等账号可见画质',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: context.palette.textMuted,
+                ),
+              ),
+            ],
+          );
+          final action = loggedIn
+              ? TextButton(
+                  onPressed: _bilibiliAuthBusy ? null : _logoutBilibili,
+                  child: const Text('退出'),
+                )
+              : FilledButton.tonalIcon(
+                  onPressed: _bilibiliAuthBusy ? null : _showBilibiliLogin,
+                  icon: const Icon(Icons.qr_code_2_rounded),
+                  label: const Text('扫码登录'),
+                );
+          if (constraints.maxWidth < 520) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  loggedIn ? account?.name ?? 'B站已登录' : 'B站最高画质',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    icon,
+                    const SizedBox(width: 12),
+                    Expanded(child: details),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  loggedIn
-                      ? '${account?.vipLabel?.isNotEmpty == true ? '${account!.vipLabel} · ' : ''}登录会话仅加密保存在本机'
-                      : '扫码登录后解析 1080P、4K、HDR 等账号可见画质',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: context.palette.textMuted,
-                      ),
-                ),
+                const SizedBox(height: 12),
+                SizedBox(width: double.infinity, child: action),
               ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          if (loggedIn)
-            TextButton(
-              onPressed: _bilibiliAuthBusy ? null : _logoutBilibili,
-              child: const Text('退出'),
-            )
-          else
-            FilledButton.tonalIcon(
-              onPressed: _bilibiliAuthBusy ? null : _showBilibiliLogin,
-              icon: const Icon(Icons.qr_code_2_rounded),
-              label: const Text('扫码登录'),
-            ),
-        ],
+            );
+          }
+          return Row(
+            children: [
+              icon,
+              const SizedBox(width: 12),
+              Expanded(child: details),
+              const SizedBox(width: 12),
+              action,
+            ],
+          );
+        },
       ),
     );
   }
@@ -667,8 +764,9 @@ class _ParserPageState extends State<ParserPage> {
     final kinds = AssetKind.values
         .where((kind) => media.options.any((option) => option.kind == kind))
         .toList(growable: false);
-    final options =
-        media.options.where((option) => option.kind == _kind).toList();
+    final options = media.options
+        .where((option) => option.kind == _kind)
+        .toList();
     return LangbaiCard(
       child: Padding(
         padding: const EdgeInsets.all(22),
@@ -686,7 +784,7 @@ class _ParserPageState extends State<ParserPage> {
                         children: [
                           preview,
                           const SizedBox(height: 18),
-                          details
+                          details,
                         ],
                       )
                     : Row(
@@ -706,8 +804,11 @@ class _ParserPageState extends State<ParserPage> {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Row(
                     children: [
-                      Icon(Icons.info_outline_rounded,
-                          size: 17, color: context.palette.warning),
+                      Icon(
+                        Icons.info_outline_rounded,
+                        size: 17,
+                        color: context.palette.warning,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(child: Text(warning)),
                     ],
@@ -728,13 +829,15 @@ class _ParserPageState extends State<ParserPage> {
                         : (_) {
                             setState(() {
                               _kind = kind;
-                              _selected = media.options
-                                  .firstWhere((option) => option.kind == kind);
+                              _selected = media.options.firstWhere(
+                                (option) => option.kind == kind,
+                              );
                             });
                           },
                     avatar: Icon(_kindIcon(kind), size: 18),
                     label: Text(
-                        '${_kindLabel(kind)} (${media.options.where((o) => o.kind == kind).length})'),
+                      '${_kindLabel(kind)} (${media.options.where((o) => o.kind == kind).length})',
+                    ),
                   ),
               ],
             ),
@@ -756,6 +859,7 @@ class _ParserPageState extends State<ParserPage> {
                 job: _job,
                 saveProgress: _saveProgress,
                 local: _usesLocalParser,
+                onCancel: _saving ? _cancelDownload : null,
               ),
             ],
             const SizedBox(height: 14),
@@ -805,21 +909,27 @@ class _ErrorBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.errorContainer,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Theme.of(context).colorScheme.error),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.error_outline_rounded,
-              color: Theme.of(context).colorScheme.error),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message)),
-        ],
+    return Semantics(
+      liveRegion: true,
+      label: '错误：$message',
+      child: Container(
+        padding: const EdgeInsets.all(15),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.errorContainer,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Theme.of(context).colorScheme.error),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.error_outline_rounded,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+          ],
+        ),
       ),
     );
   }
@@ -843,8 +953,9 @@ class _MediaPreview extends StatelessWidget {
               : Image.network(
                   media.thumbnailUrl!,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Center(
-                      child: Icon(Icons.broken_image_outlined, size: 42)),
+                  errorBuilder: (_, _, _) => const Center(
+                    child: Icon(Icons.broken_image_outlined, size: 42),
+                  ),
                 ),
         ),
       ),
@@ -871,7 +982,9 @@ class _MediaDetails extends StatelessWidget {
           child: Text(
             media.platform,
             style: TextStyle(
-                color: Theme.of(context).colorScheme.primary, fontSize: 12),
+              color: Theme.of(context).colorScheme.primary,
+              fontSize: 12,
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -880,9 +993,9 @@ class _MediaDetails extends StatelessWidget {
           maxLines: 3,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w800,
-                height: 1.3,
-              ),
+            fontWeight: FontWeight.w800,
+            height: 1.3,
+          ),
         ),
         const SizedBox(height: 10),
         Wrap(
@@ -897,8 +1010,9 @@ class _MediaDetails extends StatelessWidget {
                 text: _duration(media.durationSeconds!),
               ),
             _Meta(
-                icon: Icons.layers_outlined,
-                text: '${media.options.length} 个资源'),
+              icon: Icons.layers_outlined,
+              text: '${media.options.length} 个资源',
+            ),
           ],
         ),
       ],
@@ -919,8 +1033,10 @@ class _Meta extends StatelessWidget {
       children: [
         Icon(icon, size: 16, color: context.palette.textMuted),
         const SizedBox(width: 5),
-        Text(text,
-            style: TextStyle(color: context.palette.textMuted, fontSize: 13)),
+        Text(
+          text,
+          style: TextStyle(color: context.palette.textMuted, fontSize: 13),
+        ),
       ],
     );
   }
@@ -941,68 +1057,83 @@ class _OptionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: selected
-          ? context.palette.navigationSelected
-          : context.palette.surfaceRaised,
-      borderRadius: BorderRadius.circular(15),
-      child: InkWell(
-        onTap: enabled ? onTap : null,
+    return Semantics(
+      selected: selected,
+      enabled: enabled,
+      button: true,
+      inMutuallyExclusiveGroup: true,
+      label: option.label,
+      child: Material(
+        color: selected
+            ? context.palette.navigationSelected
+            : context.palette.surfaceRaised,
         borderRadius: BorderRadius.circular(15),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(15),
-            border: Border.all(
-              color: selected
-                  ? Theme.of(context).colorScheme.primary
-                  : context.palette.border,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(15),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(
+                color: selected
+                    ? Theme.of(context).colorScheme.primary
+                    : context.palette.border,
+              ),
             ),
-          ),
-          child: Row(
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 160),
-                width: 20,
-                height: 20,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: selected
-                        ? Theme.of(context).colorScheme.primary
-                        : context.palette.textMuted,
-                    width: selected ? 6 : 2,
+            child: Row(
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  width: 20,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: selected
+                          ? Theme.of(context).colorScheme.primary
+                          : context.palette.textMuted,
+                      width: selected ? 6 : 2,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 13),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(option.label,
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
-                    if (option.resolution != null ||
-                        option.filesizeLabel != null) ...[
-                      const SizedBox(height: 4),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        [option.resolution, option.filesizeLabel]
-                            .whereType<String>()
-                            .join(' · '),
-                        style: TextStyle(
-                            color: context.palette.textMuted, fontSize: 12),
+                        option.label,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
+                      if (option.resolution != null ||
+                          option.filesizeLabel != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          [
+                            option.resolution,
+                            option.filesizeLabel,
+                          ].whereType<String>().join(' · '),
+                          style: TextStyle(
+                            color: context.palette.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-              if (option.requiresMerge)
-                Tooltip(
-                  message: '服务端将用 FFmpeg 自动合并最佳音频',
-                  child: Icon(Icons.merge_rounded,
-                      size: 19, color: context.palette.textMuted),
-                ),
-            ],
+                if (option.requiresMerge)
+                  Tooltip(
+                    message: '服务端将用 FFmpeg 自动合并最佳音频',
+                    child: Icon(
+                      Icons.merge_rounded,
+                      size: 19,
+                      color: context.palette.textMuted,
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1042,10 +1173,7 @@ class _SaveDestinationTile extends StatelessWidget {
                   color: Theme.of(context).colorScheme.primaryContainer,
                   borderRadius: BorderRadius.circular(13),
                 ),
-                child: Icon(
-                  icon,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
+                child: Icon(icon, color: Theme.of(context).colorScheme.primary),
               ),
               const SizedBox(width: 13),
               Expanded(
@@ -1081,11 +1209,13 @@ class _ProgressPanel extends StatelessWidget {
     required this.job,
     required this.saveProgress,
     required this.local,
+    this.onCancel,
   });
 
   final DownloadJob? job;
   final double saveProgress;
   final bool local;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1099,6 +1229,7 @@ class _ProgressPanel extends StatelessWidget {
             JobState.running => local ? '本机正在下载并处理…' : '服务器正在下载并处理…',
             JobState.completed => saveProgress >= 1 ? '保存完成' : '正在保存到设备…',
             JobState.failed => '任务失败',
+            JobState.cancelled => '任务已取消',
           };
     final details = current?.speedBytesPerSecond == null
         ? null
@@ -1116,9 +1247,20 @@ class _ProgressPanel extends StatelessWidget {
             children: [
               Expanded(child: Text(label)),
               if (details != null)
-                Text(details,
-                    style: TextStyle(
-                        color: context.palette.textMuted, fontSize: 12)),
+                Text(
+                  details,
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              if (onCancel != null &&
+                  (current == null ||
+                      current.state == JobState.queued ||
+                      current.state == JobState.running)) ...[
+                const SizedBox(width: 8),
+                TextButton(onPressed: onCancel, child: const Text('取消')),
+              ],
             ],
           ),
           const SizedBox(height: 9),
@@ -1201,6 +1343,24 @@ class _BilibiliLoginDialogState extends State<_BilibiliLoginDialog> {
     }
   }
 
+  Future<void> _openBilibili() async {
+    var opened = false;
+    try {
+      opened = await launchUrl(
+        Uri.parse('bilibili://root'),
+        mode: LaunchMode.externalApplication,
+      );
+    } on Object {
+      opened = false;
+    }
+    if (!opened) {
+      await launchUrl(
+        Uri.parse('https://www.bilibili.com/'),
+        mode: LaunchMode.externalApplication,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = _session;
@@ -1212,27 +1372,35 @@ class _BilibiliLoginDialogState extends State<_BilibiliLoginDialog> {
           Text('B站扫码登录'),
         ],
       ),
-      content: SizedBox(
-        width: 300,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 300),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (_loading)
-              const SizedBox.square(
-                dimension: 220,
-                child: Center(child: CircularProgressIndicator()),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 228),
+                child: const AspectRatio(
+                  aspectRatio: 1,
+                  child: Center(child: CircularProgressIndicator()),
+                ),
               )
             else if (session != null)
-              Container(
-                width: 228,
-                height: 228,
-                padding: const EdgeInsets.all(4),
-                color: Colors.white,
-                child: QrImageView(
-                  data: session.url,
-                  version: QrVersions.auto,
-                  size: 220,
-                  backgroundColor: Colors.white,
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 228),
+                child: AspectRatio(
+                  aspectRatio: 1,
+                  child: ColoredBox(
+                    color: Colors.white,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: QrImageView(
+                        data: session.url,
+                        version: QrVersions.auto,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
                 ),
               ),
             const SizedBox(height: 16),
@@ -1241,14 +1409,19 @@ class _BilibiliLoginDialogState extends State<_BilibiliLoginDialog> {
             Text(
               '会话仅保存在本机加密存储，不上传账号密码。',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: context.palette.textMuted,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: context.palette.textMuted),
             ),
           ],
         ),
       ),
       actions: [
+        TextButton.icon(
+          onPressed: _openBilibili,
+          icon: const Icon(Icons.open_in_new_rounded),
+          label: const Text('打开哔哩哔哩'),
+        ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('取消'),
@@ -1264,16 +1437,16 @@ class _BilibiliLoginDialogState extends State<_BilibiliLoginDialog> {
 }
 
 IconData _kindIcon(AssetKind kind) => switch (kind) {
-      AssetKind.video => Icons.movie_outlined,
-      AssetKind.audio => Icons.graphic_eq_rounded,
-      AssetKind.image => Icons.image_outlined,
-    };
+  AssetKind.video => Icons.movie_outlined,
+  AssetKind.audio => Icons.graphic_eq_rounded,
+  AssetKind.image => Icons.image_outlined,
+};
 
 String _kindLabel(AssetKind kind) => switch (kind) {
-      AssetKind.video => '视频',
-      AssetKind.audio => '音频',
-      AssetKind.image => '封面 / 图片',
-    };
+  AssetKind.video => '视频',
+  AssetKind.audio => '音频',
+  AssetKind.image => '封面 / 图片',
+};
 
 String _duration(int total) {
   final hours = total ~/ 3600;

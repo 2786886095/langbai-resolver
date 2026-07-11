@@ -36,8 +36,6 @@
 	<string>用于将你选择下载的视频和图片保存到系统相册。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>

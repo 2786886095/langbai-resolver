@@ -47,9 +47,29 @@ def save_png(image: Image.Image, path: Path, size: int) -> None:
     )
 
 
+def circular_icon(image: Image.Image) -> Image.Image:
+    icon = image.convert("RGBA")
+    mask = Image.new("L", icon.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, icon.width - 1, icon.height - 1), fill=255)
+    icon.putalpha(mask)
+    return icon
+
+
+def adaptive_foreground(size: int = 1024) -> Image.Image:
+    source = Image.open(SOURCE).convert("RGBA")
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    avatar_size = round(size * 0.72)
+    avatar = source.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+    offset = ((size - avatar_size) // 2, (size - avatar_size) // 2)
+    canvas.alpha_composite(avatar, offset)
+    return canvas
+
+
 def main() -> None:
     master = compose()
     maskable = compose(safe=True)
+    round_master = circular_icon(master)
+    foreground = adaptive_foreground()
     master.save(MASTER, format="PNG", optimize=True)
 
     android = {
@@ -62,6 +82,13 @@ def main() -> None:
     android_root = ROOT / "client/android/app/src/main/res"
     for name, size in android.items():
         save_png(master, android_root / name, size)
+        round_name = name.replace("ic_launcher.png", "ic_launcher_round.png")
+        save_png(round_master, android_root / round_name, size)
+    save_png(
+        foreground,
+        android_root / "drawable-nodpi/ic_launcher_foreground_image.png",
+        1024,
+    )
 
     ios = {
         "Icon-App-20x20@1x.png": 20,
