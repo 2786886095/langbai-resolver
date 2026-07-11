@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/foundation.dart';
@@ -116,7 +117,9 @@ void main() {
         .setMockMethodCallHandler(_fileSelectorChannel, (call) async {
           filePickerCalls++;
           expect(call.method, 'openFile');
-          return <String>[r'C:\tmp\sample.mp4'];
+          return <String>[
+            Platform.isWindows ? r'C:\tmp\sample.mp4' : '/tmp/sample.mp4',
+          ];
         });
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
