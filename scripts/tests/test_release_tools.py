@@ -148,6 +148,19 @@ class WorkflowTests(unittest.TestCase):
             workflow,
         )
 
+    def test_backend_tests_run_from_backend_directory(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            workflow,
+            r"- name: Test backend\n"
+            r"\s+working-directory: backend\n"
+            r"\s+run: \|\n"
+            r"\s+python -m pip install [^\n]+ -r requirements-dev\.lock\n"
+            r"\s+python -m pytest tests -q",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

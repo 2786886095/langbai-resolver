@@ -38,7 +38,7 @@
 - Android：API 36 Debug APK 与应用模块 lint 均在干净 ASCII Gradle 缓存中通过，并已纳入 CI 门禁。
 - 真实链接：用户提供的快手链接成功解析为 MP4 与封面，Range 下载返回 `206 video/mp4`；抖音分享链接成功返回视频和封面；B站匿名公开视频成功返回视频、音频和封面选项。
 - 音乐：`周杰伦` 实测聚合 57 条目录结果，开放许可资源可列出文件并完成 `206 audio/mpeg` Range 下载。
-- 发布工具：10 项单元测试、PowerShell 语法、Inno Setup smoke、Actionlint 与 Zizmor 已通过；各发布任务显式导出版本/构建号，无可信 Windows 证书时可安全发布移动端且更新清单省略 Windows，Web Release 构建与官方 Gradle Wrapper 校验通过。
+- 发布工具：11 项单元测试、PowerShell 语法、Inno Setup smoke、Actionlint 与 Zizmor 已通过；各发布任务显式导出版本/构建号，后端测试固定在正确模块目录运行，无可信 Windows 证书时可安全发布移动端且更新清单省略 Windows，Web Release 构建与官方 Gradle Wrapper 校验通过。
 - 品牌资源：小人主图、头像、Windows ICO、Android density/adaptive/round 图标、iOS AppIcon 与 Web favicon 均存在并被工程引用；源码无实际 mojibake 或 ESC 控制字符。
 
 ## 有意保留或需要仓库管理员完成
