@@ -81,10 +81,10 @@ GitHub Actions 发布前需要配置：
 - Secrets：`WINDOWS_SIGNING_CERTIFICATE_BASE64`、`WINDOWS_SIGNING_CERTIFICATE_PASSWORD`
 - Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`
 - Repository variable：`WEB_API_BASE_URL`，必须是公网 HTTPS；不发布 Web 时可不配置，工作流会自动跳过 Web job
-- Repository variable：`ENABLE_WINDOWS_SIGNED_BUILD=true`，在已配置 Windows 签名 Secrets 后启用日常 Setup 构建
+- Repository variable：`ENABLE_WINDOWS_SIGNED_BUILD=true`，在已配置 Windows 签名 Secrets 后启用日常及正式 Setup 构建；手动发布也可勾选 `include_windows`
 - Repository Settings：启用分支保护或 Ruleset、必需检查、Dependabot alerts，并限制 Release 环境的写权限
 
-依赖构建使用带哈希的 `requirements.lock`、`requirements-build.lock` 和 `requirements-dev.lock`；工作流 Action 固定到完整 commit SHA。推送 `v1.0.9` 形式的 tag 后，Release 流程会产出签名 Windows Setup、固定签名 Android APK、现有未签名 IPA、可选 Web 包和固定版本资产 URL 的更新清单。
+依赖构建使用带哈希的 `requirements.lock`、`requirements-build.lock` 和 `requirements-dev.lock`；工作流 Action 固定到完整 commit SHA。Release 流程始终产出固定签名 Android APK 和现有未签名 IPA；Web 包按 HTTPS API 配置选择性生成。只有配置可信 Authenticode Secrets 并启用 Windows 构建时，才会加入签名 Windows Setup；缺少证书时更新清单会安全地省略 Windows，而不是发布不可信安装包。
 
 iOS 未签名 IPA 的安装/签名问题按当前项目范围保留，不在本轮修复中；正常安装仍需要有效 Apple 证书或用户自己的签名流程。
 

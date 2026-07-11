@@ -55,23 +55,30 @@ def build_manifest(
     if not _REPOSITORY.fullmatch(repository):
         raise ValueError("Repository must use the owner/name form")
 
-    windows = _asset(assets, "langbai-resolver-Setup.exe")
+    windows = _asset(assets, "langbai-resolver-Setup.exe", required=False)
     android = _asset(assets, "langbai-resolver-Android.apk")
     ios = _asset(assets, "langbai-resolver-iOS.ipa", required=False)
     web = _asset(assets, "langbai-resolver-Web.zip", required=False)
-    signer_file = _asset(assets, "windows-signing-cert-sha256.txt")
-    assert windows is not None and android is not None and signer_file is not None
-    signer = signer_file.read_text(encoding="utf-8").strip().lower()
-    if not _SHA256.fullmatch(signer):
-        raise ValueError("Windows signing certificate SHA-256 is invalid")
+    signer_file = _asset(
+        assets, "windows-signing-cert-sha256.txt", required=False
+    )
+    if (windows is None) != (signer_file is None):
+        raise FileNotFoundError(
+            "Windows Setup and signing certificate fingerprint must be provided together"
+        )
+    assert android is not None
 
     base = f"https://github.com/{repository}/releases/download/v{version}"
-    windows_release = _platform_release(base, windows)
-    windows_release["signing_certificate_sha256"] = signer
     platforms: dict[str, dict[str, object]] = {
-        "windows": windows_release,
         "android": _platform_release(base, android),
     }
+    if windows is not None and signer_file is not None:
+        signer = signer_file.read_text(encoding="utf-8").strip().lower()
+        if not _SHA256.fullmatch(signer):
+            raise ValueError("Windows signing certificate SHA-256 is invalid")
+        windows_release = _platform_release(base, windows)
+        windows_release["signing_certificate_sha256"] = signer
+        platforms["windows"] = windows_release
     if ios is not None:
         platforms["ios"] = _platform_release(base, ios)
     if web is not None:

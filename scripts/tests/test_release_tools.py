@@ -91,6 +91,34 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(windows["signing_certificate_sha256"], "a" * 64)
         self.assertEqual(windows["size_bytes"], 5)
 
+    def test_mobile_only_release_omits_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            (assets / "langbai-resolver-Android.apk").write_bytes(b"apk")
+            (assets / "langbai-resolver-iOS.ipa").write_bytes(b"ipa")
+            manifest = manifest_tool.build_manifest(
+                version="1.2.3",
+                repository="owner/repo",
+                notes="notes",
+                assets=assets,
+            )
+        self.assertNotIn("windows", manifest["platforms"])
+        self.assertIn("android", manifest["platforms"])
+        self.assertIn("ios", manifest["platforms"])
+
+    def test_incomplete_windows_release_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            (assets / "langbai-resolver-Android.apk").write_bytes(b"apk")
+            (assets / "langbai-resolver-Setup.exe").write_bytes(b"setup")
+            with self.assertRaises(FileNotFoundError):
+                manifest_tool.build_manifest(
+                    version="1.2.3",
+                    repository="owner/repo",
+                    notes="notes",
+                    assets=assets,
+                )
+
 
 class WorkflowTests(unittest.TestCase):
     def test_release_validation_exports_version_to_following_steps(self) -> None:
@@ -104,6 +132,21 @@ class WorkflowTests(unittest.TestCase):
         )
         self.assertEqual(len(commands), 6)
         self.assertTrue(all("--github-env" in command for command in commands))
+
+    def test_mobile_release_accepts_skipped_windows_job(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "inputs.include_windows == true || "
+            "vars.ENABLE_WINDOWS_SIGNED_BUILD == 'true'",
+            workflow,
+        )
+        self.assertIn(
+            "needs.windows.result == 'success' || "
+            "needs.windows.result == 'skipped'",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
