@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import html
 import json
 import multiprocessing
 import os
@@ -14,6 +16,8 @@ import subprocess  # nosec B404
 import threading
 import time
 import uuid
+import zipfile
+import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -21,6 +25,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 import yt_dlp
+from bs4 import BeautifulSoup
 from PIL import Image, ImageOps, ImageSequence
 
 from app.config import Settings
@@ -77,6 +82,31 @@ _IMAGE_INPUT_EXTENSIONS = {
     ".tif",
     ".tga",
 }
+_DOCUMENT_INPUT_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".html",
+    ".htm",
+    ".rtf",
+    ".csv",
+    ".json",
+    ".xml",
+    ".docx",
+    ".odt",
+}
+_DOCUMENT_OUTPUT_FORMATS = {
+    "txt",
+    "md",
+    "html",
+    "rtf",
+    "docx",
+    "odt",
+    "csv",
+    "json",
+    "xml",
+}
+_MAX_DOCUMENT_XML_BYTES = 32 * 1024 * 1024
 
 
 class QueueFullError(RuntimeError):
@@ -94,6 +124,205 @@ class JobCancelledError(RuntimeError):
 def _safe_stem(value: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
     return cleaned[:120] or "media"
+
+
+def _decode_document_bytes(value: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16", "gb18030"):
+        try:
+            return value.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return value.decode("utf-8", errors="replace")
+
+
+def _read_zip_member(archive: zipfile.ZipFile, name: str) -> bytes:
+    try:
+        info = archive.getinfo(name)
+    except KeyError as exc:
+        raise ValueError("文档结构不完整或文件已损坏") from exc
+    if info.file_size > _MAX_DOCUMENT_XML_BYTES:
+        raise ValueError("文档内容过大，无法安全转换")
+    return archive.read(info)
+
+
+def _strip_rtf(value: str) -> str:
+    value = re.sub(r"\\par[d]?\b", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"\\'([0-9a-fA-F]{2})",
+        lambda match: bytes.fromhex(match.group(1)).decode("cp1252", errors="replace"),
+        value,
+    )
+
+    def unicode_character(match: re.Match[str]) -> str:
+        codepoint = int(match.group(1))
+        if codepoint < 0:
+            codepoint += 65536
+        return chr(codepoint)
+
+    value = re.sub(r"\\u(-?\d+)\??", unicode_character, value)
+    value = value.replace(r"\{", "{").replace(r"\}", "}").replace(r"\\", "\\")
+    value = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", value)
+    return re.sub(r"[{}]", "", value).strip()
+
+
+def _read_document_text(source: Path) -> str:
+    extension = source.suffix.lower()
+    if extension == ".docx":
+        with zipfile.ZipFile(source) as archive:
+            xml = _read_zip_member(archive, "word/document.xml")
+        root = ElementTree.fromstring(xml)
+        paragraphs = [
+            "".join(node.itertext())
+            for node in root.iter()
+            if node.tag.rsplit("}", 1)[-1] == "p"
+        ]
+        return "\n".join(paragraphs).strip()
+    if extension == ".odt":
+        with zipfile.ZipFile(source) as archive:
+            xml = _read_zip_member(archive, "content.xml")
+        root = ElementTree.fromstring(xml)
+        paragraphs = [
+            "".join(node.itertext())
+            for node in root.iter()
+            if node.tag.rsplit("}", 1)[-1] in {"p", "h"}
+        ]
+        return "\n".join(paragraphs).strip()
+    text = _decode_document_bytes(source.read_bytes())
+    if extension in {".html", ".htm"}:
+        return BeautifulSoup(text, "html.parser").get_text("\n", strip=True)
+    if extension == ".rtf":
+        return _strip_rtf(text)
+    return text
+
+
+def _document_paragraphs(text: str) -> list[str]:
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def _write_docx(target: Path, text: str) -> None:
+    paragraphs = "".join(
+        '<w:p><w:r><w:t xml:space="preserve">'
+        f"{html.escape(line, quote=False)}"
+        "</w:t></w:r></w:p>"
+        for line in _document_paragraphs(text)
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{paragraphs}<w:sectPr/></w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/></Relationships>'
+    )
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("word/document.xml", document)
+
+
+def _write_odt(target: Path, text: str) -> None:
+    paragraphs = "".join(
+        f"<text:p>{html.escape(line, quote=False)}</text:p>"
+        for line in _document_paragraphs(text)
+    )
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<office:document-content '
+        'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+        'office:version="1.2"><office:body><office:text>'
+        f"{paragraphs}</office:text></office:body></office:document-content>"
+    )
+    manifest = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<manifest:manifest '
+        'xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" '
+        'manifest:version="1.2">'
+        '<manifest:file-entry manifest:full-path="/" '
+        'manifest:media-type="application/vnd.oasis.opendocument.text"/>'
+        '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
+        "</manifest:manifest>"
+    )
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr(
+            "mimetype",
+            "application/vnd.oasis.opendocument.text",
+            compress_type=zipfile.ZIP_STORED,
+        )
+        archive.writestr("content.xml", content, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr(
+            "META-INF/manifest.xml", manifest, compress_type=zipfile.ZIP_DEFLATED
+        )
+
+
+def _write_document(target: Path, text: str, extension: str) -> None:
+    if extension in {"txt", "md"}:
+        target.write_text(text, encoding="utf-8")
+    elif extension == "html":
+        target.write_text(
+            '<!doctype html><html><head><meta charset="utf-8"></head><body><pre>'
+            f"{html.escape(text)}</pre></body></html>",
+            encoding="utf-8",
+        )
+    elif extension == "rtf":
+        escaped: list[str] = []
+        for character in text:
+            if character == "\n":
+                escaped.append(r"\par " + "\n")
+            elif character in "\\{}":
+                escaped.append("\\" + character)
+            elif ord(character) > 127:
+                units = character.encode("utf-16-le")
+                for index in range(0, len(units), 2):
+                    codepoint = int.from_bytes(units[index : index + 2], "little")
+                    signed = codepoint if codepoint < 32768 else codepoint - 65536
+                    escaped.append(f"\\u{signed}?")
+            else:
+                escaped.append(character)
+        target.write_text(r"{\rtf1\ansi\uc1 " + "".join(escaped) + "}", encoding="ascii")
+    elif extension == "docx":
+        _write_docx(target, text)
+    elif extension == "odt":
+        _write_odt(target, text)
+    elif extension == "csv":
+        with target.open("w", encoding="utf-8-sig", newline="") as output:
+            writer = csv.writer(output)
+            writer.writerow(["content"])
+            writer.writerows([line] for line in _document_paragraphs(text))
+    elif extension == "json":
+        target.write_text(
+            json.dumps(
+                {"content": text, "lines": _document_paragraphs(text)},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    elif extension == "xml":
+        paragraphs = "".join(
+            f"<paragraph>{html.escape(line, quote=False)}</paragraph>"
+            for line in _document_paragraphs(text)
+        )
+        target.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?><document>'
+            f"{paragraphs}</document>",
+            encoding="utf-8",
+        )
+    else:
+        raise ValueError(f"不支持转换为 {extension.upper()}")
 
 
 def _looks_like_text_error(content_type: str, prefix: bytes) -> bool:
@@ -374,6 +603,7 @@ class JobManager:
             "compress_video",
             "compress_image",
             "convert_media",
+            "convert_document",
             "metadata",
         }
         if operation not in allowed:
@@ -1151,6 +1381,19 @@ class JobManager:
             target.write_text(
                 json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            self._set_progress(job_id, 0.99)
+            return target
+        if spec.operation == "convert_document":
+            extension = spec.output_format.lower().lstrip(".")
+            if source.suffix.lower() not in _DOCUMENT_INPUT_EXTENSIONS:
+                raise ValueError(f"不支持 {source.suffix.upper()} 文档输入")
+            if extension not in _DOCUMENT_OUTPUT_FORMATS:
+                raise ValueError(f"不支持转换为 {extension.upper()}")
+            self._set_progress(job_id, 0.2)
+            text = _read_document_text(source)
+            self._set_progress(job_id, 0.65)
+            target = job_dir / f"{stem}-converted.{extension}"
+            _write_document(target, text, extension)
             self._set_progress(job_id, 0.99)
             return target
         if spec.operation == "convert_media":

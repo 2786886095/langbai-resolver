@@ -39,7 +39,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
 
       expect(find.text('格式转换'), findsWidgets);
-      expect(find.text('拖入文件，或点击选择'), findsOneWidget);
+      expect(find.text('第 1 步 · 拖入文件，或点击选择'), findsOneWidget);
       expect(find.byType(DropTarget), findsOneWidget);
     } finally {
       debugDefaultTargetPlatformOverride = null;
@@ -49,6 +49,8 @@ void main() {
   testWidgets('mobile conversion only exposes native reported formats', (
     tester,
   ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
           if (call.method == 'getCapabilities') {
@@ -77,6 +79,11 @@ void main() {
           }
           return null;
         });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_fileSelectorChannel, (call) async {
+          expect(call.method, 'openFile');
+          return <String>['/tmp/sample.mp4'];
+        });
     tester.view.physicalSize = const Size(320, 568);
     tester.view.devicePixelRatio = 1;
     tester.platformDispatcher.textScaleFactorTestValue = 2;
@@ -88,6 +95,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
 
     expect(find.text('选择本地文件'), findsOneWidget);
+    expect(
+      find.text('第 1 步：先选择需要转换的文件，系统会根据文件类型列出可用格式。'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('MP4'), findsNothing);
+    await tester.tap(find.text('选择本地文件'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('MP4'), findsOneWidget);
     await tester.ensureVisible(find.textContaining('MP4'));
     await tester.tap(find.textContaining('MP4'));

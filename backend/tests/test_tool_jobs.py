@@ -57,6 +57,42 @@ def test_image_compression_job(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_txt_to_word_document_conversion_job(tmp_path) -> None:
+    async def scenario() -> None:
+        source = tmp_path / "notes.txt"
+        source.write_text("浪白解析\nTXT 转 Word", encoding="utf-8")
+        settings = Settings(
+            host="127.0.0.1",
+            port=8787,
+            download_dir=tmp_path / "downloads",
+            cache_ttl_seconds=3600,
+            job_ttl_seconds=3600,
+            max_concurrent_jobs=1,
+            cors_origins=("*",),
+            ffmpeg_location=None,
+            allow_fake_ip_dns=False,
+        )
+        jobs = JobManager(settings, ResolverService(settings))
+        job = jobs.create_tool(
+            source,
+            operation="convert_document",
+            output_format="docx",
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            job = jobs.get(job.id)
+            if job and job.state not in {JobState.QUEUED, JobState.RUNNING}:
+                break
+        assert job is not None
+        assert job.state == JobState.COMPLETED
+        output = jobs.file_for(job.id)
+        assert output is not None
+        assert output.suffix == ".docx"
+        assert output.read_bytes().startswith(b"PK")
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("output_format", "expected_codec"),
     [

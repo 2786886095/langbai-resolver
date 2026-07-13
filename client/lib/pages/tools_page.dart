@@ -35,7 +35,7 @@ class ToolsPage extends StatefulWidget {
   final SaveDestination defaultSaveDestination;
   final String? customSaveDestinationUri;
   final void Function(DownloadJob job, String title, String optionLabel)?
-  onJobChanged;
+      onJobChanged;
   final ValueChanged<String> onOpenParser;
 
   @override
@@ -108,7 +108,7 @@ class _ToolsPageState extends State<ToolsPage> {
     _ToolDefinition(
       'convert',
       '格式转换',
-      '拖入或选择文件，按本机/服务实际能力转换格式',
+      '先选择源文件，再按实际能力选择格式并导出',
       Icons.sync_alt_rounded,
     ),
     _ToolDefinition(
@@ -169,9 +169,8 @@ class _ToolsPageState extends State<ToolsPage> {
         local = null;
       }
     }
-    final remote = LocalMediaService.isSupported
-        ? false
-        : await _api.isHealthy();
+    final remote =
+        LocalMediaService.isSupported ? false : await _api.isHealthy();
     if (!mounted) return;
     setState(() {
       _localCapabilities = local;
@@ -238,8 +237,8 @@ class _ToolsPageState extends State<ToolsPage> {
     _selectTool(tool.id);
     final message = _isMobileLocal
         ? tool.id == 'transfer'
-              ? '手机端未内置 P2P / 种子引擎，当前不能创建磁力或种子任务。'
-              : '${tool.title}当前没有可用的本机实现。'
+            ? '手机端未内置 P2P / 种子引擎，当前不能创建磁力或种子任务。'
+            : '${tool.title}当前没有可用的本机实现。'
         : '${tool.title}需要连接受信任的高级工具服务，请先在设置中配置。';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -262,8 +261,8 @@ class _ToolsPageState extends State<ToolsPage> {
     final tool = _tools.any((item) => item.id == value)
         ? value
         : value.startsWith('magnet:') || value.endsWith('.torrent')
-        ? 'transfer'
-        : 'direct';
+            ? 'transfer'
+            : 'direct';
     _selectTool(
       tool,
       input: tool == 'transfer' || tool == 'direct' ? value : null,
@@ -334,14 +333,15 @@ class _ToolsPageState extends State<ToolsPage> {
   }
 
   List<String> _availableConversionFormats([XFile? selected]) {
+    final file = selected ?? _selectedFile;
+    // The output step is intentionally hidden until an input has been chosen.
+    if (file == null) return const <String>[];
     if (_localConversionAvailable) {
       final outputs = _localCapabilities!.conversion.outputFormats
           .map(_normalizeExtension)
           .where((value) => value.isNotEmpty)
           .toSet()
           .toList(growable: false);
-      final file = selected ?? _selectedFile;
-      if (file == null) return outputs;
       final extension = _fileExtension(file.name);
       if (_imageExtensions.contains(extension)) {
         return outputs
@@ -370,29 +370,6 @@ class _ToolsPageState extends State<ToolsPage> {
       return const <String>[];
     }
     if (_remoteToolsHealthy != true) return const <String>[];
-    final file = selected ?? _selectedFile;
-    if (file == null) {
-      return const [
-        'mp4',
-        'mkv',
-        'webm',
-        'avi',
-        'mov',
-        'mp3',
-        'm4a',
-        'aac',
-        'flac',
-        'wav',
-        'ogg',
-        'opus',
-        'jpg',
-        'png',
-        'webp',
-        'gif',
-        'bmp',
-        'tiff',
-      ];
-    }
     final extension = _fileExtension(file.name);
     if (_imageExtensions.contains(extension)) {
       return const ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff'];
@@ -434,6 +411,11 @@ class _ToolsPageState extends State<ToolsPage> {
         'bmp',
         'tiff',
       ];
+    }
+    if (_documentExtensions.contains(extension)) {
+      return _documentFormats
+          .where((format) => format != extension)
+          .toList(growable: false);
     }
     return const <String>[];
   }
@@ -480,8 +462,8 @@ class _ToolsPageState extends State<ToolsPage> {
                 Text(
                   '工具箱',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                        fontWeight: FontWeight.w800,
+                      ),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -502,10 +484,10 @@ class _ToolsPageState extends State<ToolsPage> {
                     final columns = constraints.maxWidth >= 900
                         ? 4
                         : constraints.maxWidth >= 620
-                        ? 3
-                        : constraints.maxWidth >= 420
-                        ? 2
-                        : 1;
+                            ? 3
+                            : constraints.maxWidth >= 420
+                                ? 2
+                                : 1;
                     final width =
                         (constraints.maxWidth - (columns - 1) * 12) / columns;
                     return Wrap(
@@ -570,9 +552,8 @@ class _ToolsPageState extends State<ToolsPage> {
                     _ToolProgress(
                       job: _job!,
                       saveProgress: _saveProgress,
-                      onCancel: _busy && !_localProbeRunning
-                          ? _cancelToolTask
-                          : null,
+                      onCancel:
+                          _busy && !_localProbeRunning ? _cancelToolTask : null,
                     ),
                   ],
                   if (_musicResults.isNotEmpty ||
@@ -604,8 +585,8 @@ class _ToolsPageState extends State<ToolsPage> {
         () => _error = _isMobileLocal && tool == 'transfer'
             ? '手机端未内置 P2P / 种子引擎，当前不能执行该任务'
             : _isMobileLocal
-            ? '当前安装包没有报告可执行该工具的本机能力'
-            : '当前平台未连接可执行该工具的服务',
+                ? '当前安装包没有报告可执行该工具的本机能力'
+                : '当前平台未连接可执行该工具的服务',
       );
       return;
     }
@@ -667,9 +648,8 @@ class _ToolsPageState extends State<ToolsPage> {
         if (mounted) {
           setState(() {
             _musicResults = results;
-            final warnings = _usesDirectMusic
-                ? _openMusic.lastWarnings
-                : const <String>[];
+            final warnings =
+                _usesDirectMusic ? _openMusic.lastWarnings : const <String>[];
             if (results.isEmpty) {
               _statusMessage = warnings.isEmpty
                   ? '没有找到匹配结果，请尝试歌手、歌曲或专辑的完整名称'
@@ -700,17 +680,16 @@ class _ToolsPageState extends State<ToolsPage> {
       } else if (_isMobileLocal && (tool == 'audio' || tool == 'compress')) {
         final file = _selectedFile;
         if (file == null) throw const ApiException('请先选择本地文件');
-        final outputFormat = tool == 'audio'
-            ? _audioFormat
-            : _preferredCompressionFormat(file);
+        final outputFormat =
+            tool == 'audio' ? _audioFormat : _preferredCompressionFormat(file);
         await _runNativeConversion(
           file,
           outputFormat: outputFormat,
           quality: _quality >= 80
               ? 'high'
               : _quality >= 55
-              ? 'medium'
-              : 'low',
+                  ? 'medium'
+                  : 'low',
         );
       } else if (_isMobileLocal && tool == 'metadata') {
         final file = _selectedFile;
@@ -729,8 +708,8 @@ class _ToolsPageState extends State<ToolsPage> {
         final output = operation == 'extract_audio'
             ? _audioFormat
             : operation == 'compress_image'
-            ? 'webp'
-            : '';
+                ? 'webp'
+                : '';
         final job = await _api.createToolJob(
           file: file,
           operation: operation,
@@ -907,19 +886,17 @@ class _ToolsPageState extends State<ToolsPage> {
       downloadedBytes: result.sizeBytes,
       totalBytes: result.sizeBytes,
     );
-    final streamSummary = result.streams
-        .map((stream) {
-          final details = <String>[
-            stream.type,
-            if (stream.codec != null) stream.codec!,
-            if (stream.width != null && stream.height != null)
-              '${stream.width}×${stream.height}',
-            if (stream.sampleRate != null) '${stream.sampleRate} Hz',
-            if (stream.channels != null) '${stream.channels} 声道',
-          ];
-          return details.join(' · ');
-        })
-        .join('\n');
+    final streamSummary = result.streams.map((stream) {
+      final details = <String>[
+        stream.type,
+        if (stream.codec != null) stream.codec!,
+        if (stream.width != null && stream.height != null)
+          '${stream.width}×${stream.height}',
+        if (stream.sampleRate != null) '${stream.sampleRate} Hz',
+        if (stream.channels != null) '${stream.channels} 声道',
+      ];
+      return details.join(' · ');
+    }).join('\n');
     if (mounted) {
       setState(() {
         _job = job;
@@ -940,6 +917,7 @@ class _ToolsPageState extends State<ToolsPage> {
 
   SaveDestination _destinationForOutput(String outputFormat) {
     final destination = widget.defaultSaveDestination;
+    if (_documentFormats.contains(outputFormat)) return SaveDestination.files;
     if (destination != SaveDestination.gallery) return destination;
     if (_audioMediaFormats.contains(outputFormat)) {
       return SaveDestination.files;
@@ -949,6 +927,10 @@ class _ToolsPageState extends State<ToolsPage> {
 
   String _remoteConversionOperation(XFile file, String outputFormat) {
     final input = _fileExtension(file.name);
+    if (_documentExtensions.contains(input) &&
+        _documentFormats.contains(outputFormat)) {
+      return 'convert_document';
+    }
     if ((_imageExtensions.contains(input) ||
             _audioExtensions.contains(input) ||
             _videoExtensions.contains(input)) &&
@@ -963,11 +945,11 @@ class _ToolsPageState extends State<ToolsPage> {
   }
 
   int _remoteQuality(String quality) => switch (quality) {
-    'low' => 45,
-    'medium' => 65,
-    'original' => 95,
-    _ => 82,
-  };
+        'low' => 45,
+        'medium' => 65,
+        'original' => 95,
+        _ => 82,
+      };
 
   void _notifyToolJob(DownloadJob job) {
     final toolId = _selectedTool;
@@ -1154,9 +1136,8 @@ class _ToolsPageState extends State<ToolsPage> {
   }
 
   bool _isImage(String name) {
-    final extension = name.contains('.')
-        ? name.split('.').last.toLowerCase()
-        : '';
+    final extension =
+        name.contains('.') ? name.split('.').last.toLowerCase() : '';
     return const {
       'jpg',
       'jpeg',
@@ -1295,8 +1276,8 @@ class _ToolAvailabilityNotice extends StatelessWidget {
               child: Text(
                 localConversion
                     ? mobile
-                          ? '解析、公开媒体识别、音乐、音频提取、压缩、格式转换和媒体信息均按手机内置能力运行；磁力/种子引擎未内置。'
-                          : '解析、音乐和格式转换可在本机使用；其余高级工具需要受信任服务。'
+                        ? '解析、公开媒体识别、音乐、音频提取、压缩、格式转换和媒体信息均按手机内置能力运行；磁力/种子引擎未内置。'
+                        : '解析、音乐和格式转换可在本机使用；其余高级工具需要受信任服务。'
                     : '链接解析和多源音乐可直接使用；其余高级工具已停用，连接受信任服务后才会开放。',
               ),
             ),
@@ -1356,25 +1337,25 @@ class _ToolWorkspace extends StatelessWidget {
   final VoidCallback onRun;
 
   bool get _needsFile => const {
-    'audio',
-    'compress',
-    'convert',
-    'metadata',
-    'transfer',
-  }.contains(tool.id);
+        'audio',
+        'compress',
+        'convert',
+        'metadata',
+        'transfer',
+      }.contains(tool.id);
   bool get _needsInput => const {
-    'parser',
-    'sniff',
-    'music',
-    'direct',
-    'transfer',
-  }.contains(tool.id);
+        'parser',
+        'sniff',
+        'music',
+        'direct',
+        'transfer',
+      }.contains(tool.id);
 
   Widget _buildFilePicker(BuildContext context) {
     final label = tool.id == 'transfer'
         ? '选择 .torrent 种子文件'
         : tool.id == 'convert' && supportsFileDrop
-        ? '拖入文件，或点击选择'
+        ? '第 1 步 · 拖入文件，或点击选择'
         : '选择本地文件';
     final content = AnimatedContainer(
       duration: const Duration(milliseconds: 160),
@@ -1468,8 +1449,8 @@ class _ToolWorkspace extends StatelessWidget {
                   labelText: tool.id == 'music'
                       ? '歌曲、歌手或专辑'
                       : tool.id == 'direct'
-                      ? '公开直链（每行一条；桌面最多 8 条）'
-                      : '链接 / Magnet',
+                          ? '公开直链（每行一条；桌面最多 8 条）'
+                          : '链接 / Magnet',
                   prefixIcon: Icon(
                     tool.id == 'music'
                         ? Icons.search_rounded
@@ -1527,19 +1508,26 @@ class _ToolWorkspace extends StatelessWidget {
             ],
             if (tool.id == 'convert') ...[
               const SizedBox(height: 14),
-              if (conversionFormats.isEmpty)
+              if (selectedFile == null)
                 Text(
-                  '当前执行器没有报告可用的输入/输出格式。',
+                  '第 1 步：先选择需要转换的文件，系统会根据文件类型列出可用格式。',
                   style: TextStyle(color: context.palette.textMuted),
-                )
-              else
+                ),
+              if (selectedFile != null && conversionFormats.isEmpty)
+                Text(
+                  '当前执行器不支持 ${_fileExtension(selectedFile!.name).toUpperCase()} 文件，请更换文件或连接支持该格式的服务。',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              if (selectedFile != null && conversionFormats.isNotEmpty) ...[
                 DropdownButtonFormField<String>(
                   // ignore: deprecated_member_use
                   value: conversionFormats.contains(conversionFormat)
                       ? conversionFormat
                       : conversionFormats.first,
                   isExpanded: true,
-                  decoration: const InputDecoration(labelText: '输出格式'),
+                  decoration: const InputDecoration(
+                    labelText: '第 2 步 · 选择输出格式',
+                  ),
                   items: [
                     for (final format in conversionFormats)
                       DropdownMenuItem(
@@ -1554,44 +1542,51 @@ class _ToolWorkspace extends StatelessWidget {
                       : (value) {
                           if (value != null) onConversionFormatChanged(value);
                         },
-              ),
-              const SizedBox(height: 7),
-              Text(
-                '已按当前文件自动筛选 ${conversionFormats.length} 种兼容输出格式',
-                style: TextStyle(
-                  color: context.palette.textMuted,
-                  fontSize: 12,
                 ),
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<String>(
-                // ignore: deprecated_member_use
-                value: conversionQualityValues.contains(conversionQuality)
-                    ? conversionQuality
-                    : conversionQualityValues.first,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: '转换质量'),
-                items: [
-                  for (final quality in conversionQualityValues)
-                    DropdownMenuItem(
-                      value: quality,
-                      child: Text(_conversionQualityLabel(quality)),
-                    ),
+                const SizedBox(height: 7),
+                Text(
+                  '已根据 ${_fileExtension(selectedFile!.name).toUpperCase()} 文件筛选 ${conversionFormats.length} 种可用格式',
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+                if (!_documentExtensions.contains(
+                  _fileExtension(selectedFile!.name),
+                )) ...[
+                  const SizedBox(height: 10),
+                  DropdownButtonFormField<String>(
+                    // ignore: deprecated_member_use
+                    value: conversionQualityValues.contains(conversionQuality)
+                        ? conversionQuality
+                        : conversionQualityValues.first,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: '转换质量'),
+                    items: [
+                      for (final quality in conversionQualityValues)
+                        DropdownMenuItem(
+                          value: quality,
+                          child: Text(_conversionQualityLabel(quality)),
+                        ),
+                    ],
+                    onChanged: busy
+                        ? null
+                        : (value) {
+                            if (value != null) {
+                              onConversionQualityChanged(value);
+                            }
+                          },
+                  ),
                 ],
-                onChanged: busy
-                    ? null
-                    : (value) {
-                        if (value != null) onConversionQualityChanged(value);
-                      },
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '仅显示当前本机转换器或已连接服务明确报告支持的格式；DRM 文件不受支持。',
-                style: TextStyle(
-                  color: context.palette.textMuted,
-                  fontSize: 12,
+                const SizedBox(height: 8),
+                Text(
+                  '仅显示当前设备或已连接服务实际支持的格式；加密或 DRM 文件不受支持。',
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
-              ),
+              ],
             ],
             if (tool.id == 'music') ...[
               const SizedBox(height: 10),
@@ -1607,14 +1602,24 @@ class _ToolWorkspace extends StatelessWidget {
             Align(
               alignment: Alignment.centerRight,
               child: FilledButton.icon(
-                onPressed: busy ? null : onRun,
+                onPressed: busy ||
+                        (tool.id == 'convert' &&
+                            (selectedFile == null || conversionFormats.isEmpty))
+                    ? null
+                    : onRun,
                 icon: busy
                     ? const SizedBox.square(
                         dimension: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.play_arrow_rounded),
-                label: Text(busy ? '处理中…' : '开始任务'),
+                label: Text(
+                  busy
+                      ? '处理中…'
+                      : tool.id == 'convert'
+                          ? '第 3 步 · 转换并导出'
+                          : '开始任务',
+                ),
               ),
             ),
           ],
@@ -1792,8 +1797,8 @@ class _ToolResults extends StatelessWidget {
               musicFiles.isNotEmpty
                   ? '可用音频文件 · ${musicFiles.length} 个'
                   : musicResults.isNotEmpty
-                  ? '多源音乐搜索结果 · ${musicResults.length} 条'
-                  : '嗅探到的媒体资源',
+                      ? '多源音乐搜索结果 · ${musicResults.length} 条'
+                      : '嗅探到的媒体资源',
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
@@ -1813,22 +1818,21 @@ class _ToolResults extends StatelessWidget {
               _ResultRow(
                 icon: Icons.album_outlined,
                 title: result.title,
-                subtitle:
-                    [
-                          result.sourceLabel,
-                          result.creator,
-                          result.year,
-                          result.album,
-                          result.license,
-                        ]
-                        .whereType<String>()
-                        .where((value) => value.isNotEmpty)
-                        .join(' · '),
+                subtitle: [
+                  result.sourceLabel,
+                  result.creator,
+                  result.year,
+                  result.album,
+                  result.license,
+                ]
+                    .whereType<String>()
+                    .where((value) => value.isNotEmpty)
+                    .join(' · '),
                 actionLabel: result.canDownload
                     ? '查看文件'
                     : result.previewUrl != null
-                    ? '试听'
-                    : '打开来源',
+                        ? '试听'
+                        : '打开来源',
                 onTap: () => onOpenMusic(result),
               )
           else
@@ -1837,8 +1841,8 @@ class _ToolResults extends StatelessWidget {
                 icon: resource.kind == 'audio'
                     ? Icons.audio_file_outlined
                     : resource.kind == 'image'
-                    ? Icons.image_outlined
-                    : Icons.movie_outlined,
+                        ? Icons.image_outlined
+                        : Icons.movie_outlined,
                 title: resource.url,
                 subtitle:
                     '${resource.kind} · ${resource.extension ?? '未知格式'} · ${resource.source}',
@@ -1919,27 +1923,28 @@ String _humanBytes(int bytes) {
 }
 
 String _conversionQualityLabel(String value) => switch (value) {
-  'low' => '较小文件',
-  'medium' => '均衡',
-  'high' => '高质量',
-  'original' => '保持原始质量（如格式支持）',
-  _ => value,
-};
+      'low' => '较小文件',
+      'medium' => '均衡',
+      'high' => '高质量',
+      'original' => '保持原始质量（如格式支持）',
+      _ => value,
+    };
 
 String _conversionFormatCategory(String value) {
   if (_videoMediaFormats.contains(value)) return '视频';
   if (_audioMediaFormats.contains(value)) return '音频';
   if (_imageMediaFormats.contains(value)) return '图片';
+  if (_documentFormats.contains(value)) return '文档';
   return '文件';
 }
 
 String _audioFormatLabel(String value) => switch (value) {
-  'mp3' => 'MP3 · 320 kbps',
-  'm4a' => 'M4A · AAC',
-  'flac' => 'FLAC · 不提升原始音质',
-  'wav' => 'WAV · PCM',
-  _ => value.toUpperCase(),
-};
+      'mp3' => 'MP3 · 320 kbps',
+      'm4a' => 'M4A · AAC',
+      'flac' => 'FLAC · 不提升原始音质',
+      'wav' => 'WAV · PCM',
+      _ => value.toUpperCase(),
+    };
 
 String _probeDuration(double seconds) {
   final total = seconds.round().clamp(0, 24 * 60 * 60);
@@ -2013,6 +2018,30 @@ const _audioExtensions = {
   'ape',
   'alac',
 };
+const _documentExtensions = {
+  'txt',
+  'md',
+  'markdown',
+  'html',
+  'htm',
+  'rtf',
+  'csv',
+  'json',
+  'xml',
+  'docx',
+  'odt',
+};
+const _documentFormats = [
+  'txt',
+  'md',
+  'html',
+  'rtf',
+  'docx',
+  'odt',
+  'csv',
+  'json',
+  'xml',
+];
 const _audioMediaFormats = {
   'mp3',
   'm4a',
