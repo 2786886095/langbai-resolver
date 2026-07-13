@@ -1,28 +1,33 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SetupPath,
-    [Parameter(Mandatory = $true)]
-    [string]$ExpectedSignerSha256
+    [string]$ExpectedSignerSha256 = "",
+    [switch]$AllowUnsigned
 )
 
 $ErrorActionPreference = "Stop"
 $SetupPath = [IO.Path]::GetFullPath($SetupPath)
-$ExpectedSignerSha256 = $ExpectedSignerSha256.Trim().ToLowerInvariant()
-$signature = Get-AuthenticodeSignature -LiteralPath $SetupPath
-$actualSigner = ""
-if ($signature.SignerCertificate) {
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        $actualSigner = ([BitConverter]::ToString(
-            $sha256.ComputeHash($signature.SignerCertificate.RawData)
-        ) -replace '-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha256.Dispose()
-    }
+if ([string]::IsNullOrWhiteSpace($ExpectedSignerSha256) -eq (-not $AllowUnsigned)) {
+    throw "Specify exactly one of ExpectedSignerSha256 or AllowUnsigned."
 }
-if ($signature.Status -ne 'Valid' -or $actualSigner -ne $ExpectedSignerSha256) {
-    throw "Setup signature check failed: $($signature.Status), signer=$actualSigner"
+if (-not $AllowUnsigned) {
+    $ExpectedSignerSha256 = $ExpectedSignerSha256.Trim().ToLowerInvariant()
+    $signature = Get-AuthenticodeSignature -LiteralPath $SetupPath
+    $actualSigner = ""
+    if ($signature.SignerCertificate) {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $actualSigner = ([BitConverter]::ToString(
+                $sha256.ComputeHash($signature.SignerCertificate.RawData)
+            ) -replace '-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    if ($signature.Status -ne 'Valid' -or $actualSigner -ne $ExpectedSignerSha256) {
+        throw "Setup signature check failed: $($signature.Status), signer=$actualSigner"
+    }
 }
 
 $TestRoot = Join-Path $env:RUNNER_TEMP "langbai-setup-smoke"
