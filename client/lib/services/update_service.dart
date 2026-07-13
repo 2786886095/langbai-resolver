@@ -11,7 +11,7 @@ import 'runtime_environment.dart';
 import 'service_credential_store.dart';
 import 'update_models.dart';
 
-const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.1');
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.2');
 
 const _configuredManifestUrl = String.fromEnvironment('UPDATE_MANIFEST_URL');
 const _defaultApiUrl = String.fromEnvironment(
@@ -108,9 +108,10 @@ class UpdateService {
       if (release.sizeBytes == null || release.sizeBytes! <= 0) {
         throw const UpdateException('Windows 更新清单缺少有效的安装包大小');
       }
-      if (!RegExp(
-        r'^[0-9a-fA-F]{64}$',
-      ).hasMatch(release.signingCertificateSha256)) {
+      if (!release.unsigned &&
+          !RegExp(
+            r'^[0-9a-fA-F]{64}$',
+          ).hasMatch(release.signingCertificateSha256)) {
         throw const UpdateException('Windows 更新清单缺少签名证书指纹');
       }
     }
@@ -192,9 +193,8 @@ Future<http.StreamedResponse> _sendManifestRequest(
     if (instanceToken.isNotEmpty && _sameOrigin(initial, current)) {
       request.headers['X-Langbai-Instance-Token'] = instanceToken;
     }
-    final response = await client
-        .send(request)
-        .timeout(const Duration(seconds: 20));
+    final response =
+        await client.send(request).timeout(const Duration(seconds: 20));
     if (!response.isRedirect) return response;
     final location = response.headers['location'];
     if (location == null || redirects == 5) {
@@ -249,17 +249,15 @@ final class _SemanticVersion implements Comparable<_SemanticVersion> {
     final withoutBuild = value.split('+').first;
     final dash = withoutBuild.indexOf('-');
     final coreText = dash < 0 ? withoutBuild : withoutBuild.substring(0, dash);
-    final prereleaseText = dash < 0
-        ? ''
-        : withoutBuild.substring(dash + 1).trim();
+    final prereleaseText =
+        dash < 0 ? '' : withoutBuild.substring(dash + 1).trim();
     final parts = coreText.split('.');
     if (parts.length != 3 ||
         parts.any((part) => !RegExp(r'^(0|[1-9]\d*)$').hasMatch(part))) {
       throw FormatException('无效的版本号：$input');
     }
-    final prerelease = prereleaseText.isEmpty
-        ? const <String>[]
-        : prereleaseText.split('.');
+    final prerelease =
+        prereleaseText.isEmpty ? const <String>[] : prereleaseText.split('.');
     if (prerelease.any(
       (part) => part.isEmpty || !RegExp(r'^[0-9A-Za-z-]+$').hasMatch(part),
     )) {

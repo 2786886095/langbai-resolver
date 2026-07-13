@@ -374,7 +374,7 @@ class OpenMusicService {
           uri,
           headers: const {
             'user-agent':
-                'langbai-resolver/1.1.1 (https://github.com/2786886095/langbai-resolver)',
+                'langbai-resolver/1.1.2 (https://github.com/2786886095/langbai-resolver)',
           },
         )
         .timeout(const Duration(seconds: 25));

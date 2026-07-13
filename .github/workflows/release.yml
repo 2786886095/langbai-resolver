@@ -11,7 +11,12 @@ on:
         required: false
         default: ""
       include_windows:
-        description: Build Windows Setup after trusted Authenticode secrets are configured
+        description: Build Windows Setup; sign it when Authenticode secrets are configured
+        required: false
+        type: boolean
+        default: false
+      allow_unsigned_windows:
+        description: Explicitly allow an unsigned Windows Setup when signing secrets are absent
         required: false
         type: boolean
         default: false
@@ -63,7 +68,7 @@ jobs:
           flutter test
 
   windows:
-    name: Build, sign and smoke-test Windows Setup
+    name: Build and smoke-test Windows Setup
     if: ${{ inputs.include_windows == true || vars.ENABLE_WINDOWS_SIGNED_BUILD == 'true' }}
     needs: quality
     runs-on: windows-latest
@@ -86,35 +91,39 @@ jobs:
           choco install innosetup --version=6.7.1 -y --no-progress
           choco install ffmpeg --version=8.1.2 -y --no-progress
           choco install aria2 --version=1.37.0 -y --no-progress
-      - name: Decode Windows signing certificate
+      - name: Build langbai Windows Setup
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)) {
-            throw 'WINDOWS_SIGNING_CERTIFICATE_BASE64 is required for official releases.'
-          }
-          [IO.File]::WriteAllBytes(
-            (Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx'),
-            [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
-          )
-      - name: Build signed langbai Windows Setup
-        shell: pwsh
-        env:
           WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
-        run: >-
-          & ./scripts/build_windows_setup.ps1
-          -Version $env:RELEASE_VERSION
-          -UpdateManifestUrl $env:UPDATE_MANIFEST_URL
-          -SigningCertificatePath (Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx')
-          -SigningCertificatePassword $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD
-          -RequireSignedInstaller
-      - name: Smoke-test signed Setup
-        shell: pwsh
-        run: >-
-          & ./scripts/test_windows_setup.ps1
-          -SetupPath ./dist/langbai-resolver-Setup.exe
-          -ExpectedSignerSha256 (Get-Content ./dist/windows-signing-cert-sha256.txt -Raw)
+          ALLOW_UNSIGNED_WINDOWS: ${{ inputs.allow_unsigned_windows }}
+        run: |
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'langbai-signing.pfx'
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)) {
+            if ($env:ALLOW_UNSIGNED_WINDOWS -ne 'true') {
+              throw 'Windows signing secrets are absent. Set allow_unsigned_windows=true to explicitly authorize an unsigned Setup.'
+            }
+            & ./scripts/build_windows_setup.ps1 `
+              -Version $env:RELEASE_VERSION `
+              -UpdateManifestUrl $env:UPDATE_MANIFEST_URL
+            & ./scripts/test_windows_setup.ps1 `
+              -SetupPath ./dist/langbai-resolver-Setup.exe `
+              -AllowUnsigned
+          } else {
+            [IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
+            )
+            & ./scripts/build_windows_setup.ps1 `
+              -Version $env:RELEASE_VERSION `
+              -UpdateManifestUrl $env:UPDATE_MANIFEST_URL `
+              -SigningCertificatePath $certificatePath `
+              -SigningCertificatePassword $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD `
+              -RequireSignedInstaller
+            & ./scripts/test_windows_setup.ps1 `
+              -SetupPath ./dist/langbai-resolver-Setup.exe `
+              -ExpectedSignerSha256 (Get-Content ./dist/windows-signing-cert-sha256.txt -Raw)
+          }
       - name: Remove signing certificate
         if: always()
         shell: pwsh

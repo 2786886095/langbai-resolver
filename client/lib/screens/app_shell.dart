@@ -100,7 +100,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final preferences = await SharedPreferences.getInstance();
     final restoredApiUrl =
         normalizeTrustedApiUrl(preferences.getString('api_base_url')) ??
-        _defaultShellApiUrl;
+            _defaultShellApiUrl;
     final restoredAccessToken = await ServiceCredentialStore.readTokenFor(
       restoredApiUrl,
     );
@@ -145,21 +145,21 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           : DateTime.fromMillisecondsSinceEpoch(lastUpdateCheck);
       _downloadDirectory =
           preferences.getString('custom_download_destination_uri') ??
-          preferences.getString('download_directory');
+              preferences.getString('download_directory');
       _downloadDirectoryName =
           preferences.getString('custom_download_destination_name') ??
-          _downloadDirectory;
+              _downloadDirectory;
       final savedDestination = preferences.getString(
         'default_save_destination',
       );
       final restoredDestination =
           savedDestination == null && _downloadDirectory != null
-          ? SaveDestination.custom
-          : saveDestinationFromName(savedDestination);
+              ? SaveDestination.custom
+              : saveDestinationFromName(savedDestination);
       _defaultSaveDestination =
           !_isMobile && restoredDestination == SaveDestination.gallery
-          ? SaveDestination.files
-          : restoredDestination;
+              ? SaveDestination.files
+              : restoredDestination;
       _apiBaseUrl = restoredApiUrl;
       _serviceAccessToken = restoredAccessToken;
       _clipboardDetectionEnabled =
@@ -623,9 +623,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Future<void> _persistDownloads() async {
     final preferences = await SharedPreferences.getInstance();
     final records = _downloads.values.toList();
-    final recent = records.length <= 100
-        ? records
-        : records.sublist(records.length - 100);
+    final recent =
+        records.length <= 100 ? records : records.sublist(records.length - 100);
     await preferences.setString(
       'download_history',
       jsonEncode(recent.map((record) => record.toJson()).toList()),
@@ -730,10 +729,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                       _defaultSaveDestination == SaveDestination.gallery
                           ? '视频和图片会默认写入系统相册；音频仍保存到文件。'
                           : _defaultSaveDestination == SaveDestination.custom
-                          ? (_downloadDirectoryName ?? '请选择一个可写目录')
-                          : _isMobile
-                          ? '默认保存到系统下载/文件目录，下载前仍可临时更改。'
-                          : '默认保存到下载目录，任务开始前仍可临时更改。',
+                              ? (_downloadDirectoryName ?? '请选择一个可写目录')
+                              : _isMobile
+                                  ? '默认保存到系统下载/文件目录，下载前仍可临时更改。'
+                                  : '默认保存到下载目录，任务开始前仍可临时更改。',
                       style: TextStyle(
                         color: dialogContext.palette.textMuted,
                         fontSize: 12,
@@ -1075,6 +1074,7 @@ class UpdateAvailableDialog extends StatelessWidget {
     final release = result.release;
     final hasDownload = release != null && release.url.isNotEmpty;
     final isWindows = result.platform == 'windows';
+    final isUnsignedWindows = isWindows && release?.unsigned == true;
     final isAndroid = result.platform == 'android';
     final isIos = result.platform == 'ios';
     return AlertDialog(
@@ -1096,12 +1096,14 @@ class UpdateAvailableDialog extends StatelessWidget {
             Text(
               hasDownload
                   ? (isWindows
-                        ? '安装包会在软件内下载并校验，随后自动启动安装。'
-                        : isAndroid
-                        ? 'APK 会在应用内下载并校验，随后打开 Android 系统安装确认。'
-                        : isIos
-                        ? 'iOS 不允许应用直接安装下载的 IPA，请通过 App Store、TestFlight 或原签名渠道更新。'
-                        : '将打开当前平台的安装包或发布页面。')
+                      ? (isUnsignedWindows
+                          ? '此 Windows 安装包没有发布者证书。软件会校验 HTTPS、文件大小和 SHA-256，随后启动安装；Windows 仍可能显示“未知发布者”，请确认后继续。'
+                          : '安装包会在软件内下载并校验签名，随后自动启动安装。')
+                      : isAndroid
+                          ? 'APK 会在应用内下载并校验，随后打开 Android 系统安装确认。'
+                          : isIos
+                              ? 'iOS 不允许应用直接安装下载的 IPA，请通过 App Store、TestFlight 或原签名渠道更新。'
+                              : '将打开当前平台的安装包或发布页面。')
                   : '已检测到新版本，但当前平台的安装包尚未发布。',
               style: TextStyle(color: context.palette.textMuted, fontSize: 12),
             ),
@@ -1117,7 +1119,13 @@ class UpdateAvailableDialog extends StatelessWidget {
           FilledButton.icon(
             onPressed: onInstall,
             icon: const Icon(Icons.download_rounded),
-            label: Text(isWindows || isAndroid ? '下载并安装' : '前往更新'),
+            label: Text(
+              isUnsignedWindows
+                  ? '仍然安装'
+                  : isWindows || isAndroid
+                      ? '下载并安装'
+                      : '前往更新',
+            ),
           ),
       ],
     );
@@ -1205,8 +1213,8 @@ class _DesktopNavigation extends StatelessWidget {
                         color: serviceHealthy == null
                             ? context.palette.textMuted
                             : serviceHealthy!
-                            ? context.palette.success
-                            : Theme.of(context).colorScheme.error,
+                                ? context.palette.success
+                                : Theme.of(context).colorScheme.error,
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1214,15 +1222,15 @@ class _DesktopNavigation extends StatelessWidget {
                       child: Text(
                         serviceHealthy == null
                             ? localParser
-                                  ? '正在加载本地解析器'
-                                  : '正在连接解析服务'
+                                ? '正在加载本地解析器'
+                                : '正在连接解析服务'
                             : serviceHealthy!
-                            ? localParser
-                                  ? '本地解析器运行正常'
-                                  : '解析服务运行正常'
-                            : localParser
-                            ? '本地解析器不可用'
-                            : '解析服务未连接',
+                                ? localParser
+                                    ? '本地解析器运行正常'
+                                    : '解析服务运行正常'
+                                : localParser
+                                    ? '本地解析器不可用'
+                                    : '解析服务未连接',
                         style: const TextStyle(fontSize: 12),
                       ),
                     ),
@@ -1257,9 +1265,8 @@ class _NavigationItem extends StatelessWidget {
       button: true,
       label: label,
       child: Material(
-        color: selected
-            ? context.palette.navigationSelected
-            : Colors.transparent,
+        color:
+            selected ? context.palette.navigationSelected : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap,
@@ -1281,18 +1288,16 @@ class _NavigationItem extends StatelessWidget {
                 Icon(
                   icon,
                   size: 21,
-                  color: selected
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
+                  color:
+                      selected ? Theme.of(context).colorScheme.primary : null,
                 ),
                 const SizedBox(width: 13),
                 Text(
                   label,
                   style: TextStyle(
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
+                    color:
+                        selected ? Theme.of(context).colorScheme.primary : null,
                   ),
                 ),
               ],
