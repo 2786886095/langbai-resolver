@@ -17,6 +17,7 @@ Future<SaveResult> saveDownload(
   bool Function()? isCancelled,
   String? customDestinationUri,
   TransferProgressCallback? onTransferProgress,
+  bool followRedirects = false,
 }) async {
   if (headers.isEmpty) {
     web.HTMLAnchorElement()
@@ -33,12 +34,11 @@ Future<SaveResult> saveDownload(
   final client = http.Client();
   try {
     final request = http.Request('GET', uri)
-      ..followRedirects = false
-      ..maxRedirects = 0
+      ..followRedirects = followRedirects
+      ..maxRedirects = followRedirects ? 5 : 0
       ..headers.addAll(headers);
-    final response = await client
-        .send(request)
-        .timeout(const Duration(seconds: 30));
+    final response =
+        await client.send(request).timeout(const Duration(seconds: 30));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StateError('文件下载失败（${response.statusCode}）');
     }
@@ -69,10 +69,9 @@ Future<SaveResult> saveDownload(
       }
       final shouldEmit =
           elapsed - lastElapsed >= const Duration(milliseconds: 250) ||
-          (total != null && received >= total);
+              (total != null && received >= total);
       if (shouldEmit) {
-        final intervalSeconds =
-            (elapsed - lastElapsed).inMicroseconds /
+        final intervalSeconds = (elapsed - lastElapsed).inMicroseconds /
             Duration.microsecondsPerSecond;
         final instant = intervalSeconds > 0
             ? (received - lastReceived) / intervalSeconds
@@ -93,7 +92,7 @@ Future<SaveResult> saveDownload(
             averageSpeedBytesPerSecond: elapsed.inMicroseconds <= 0
                 ? null
                 : received /
-                      (elapsed.inMicroseconds / Duration.microsecondsPerSecond),
+                    (elapsed.inMicroseconds / Duration.microsecondsPerSecond),
           ),
         );
         lastReceived = received;

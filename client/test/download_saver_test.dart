@@ -47,4 +47,37 @@ void main() {
       expect(await File(result.path!).readAsBytes(), bytes);
     },
   );
+
+  test('authorized public downloads may follow provider redirects', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'langbai-download-redirect-test-',
+    );
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    const bytes = <int>[9, 8, 7, 6];
+    server.listen((request) async {
+      if (request.uri.path == '/redirect') {
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(HttpHeaders.locationHeader, '/audio.mp3');
+      } else {
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+      }
+      await request.response.close();
+    });
+
+    final result = await saveDownload(
+      Uri.parse('http://127.0.0.1:${server.port}/redirect'),
+      'audio.mp3',
+      (_) {},
+      destination: SaveDestination.custom,
+      customDestinationUri: directory.path,
+      followRedirects: true,
+    );
+
+    expect(await File(result.path!).readAsBytes(), bytes);
+  });
 }

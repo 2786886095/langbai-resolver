@@ -1,11 +1,11 @@
 import 'dart:async';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../models/media_models.dart';
 import '../services/api_client.dart';
@@ -49,6 +49,14 @@ class _ToolsPageState extends State<ToolsPage> {
   late final TextEditingController _inputController;
   late ApiClient _api;
   final _openMusic = OpenMusicService();
+  final AudioPlayer _musicPlayer = AudioPlayer();
+  StreamSubscription<PlayerState>? _musicStateSubscription;
+  StreamSubscription<Duration>? _musicPositionSubscription;
+  StreamSubscription<Duration>? _musicDurationSubscription;
+  MusicSearchResult? _activeMusic;
+  PlayerState _musicPlayerState = PlayerState.stopped;
+  Duration _musicPosition = Duration.zero;
+  Duration _musicDuration = Duration.zero;
   bool _busy = false;
   bool _cancelRequested = false;
   String? _activeJobId;
@@ -141,6 +149,19 @@ class _ToolsPageState extends State<ToolsPage> {
     super.initState();
     _inputController = TextEditingController();
     _api = ApiClient(_defaultToolsApiUrl);
+    _musicStateSubscription = _musicPlayer.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => _musicPlayerState = state);
+    });
+    _musicPositionSubscription = _musicPlayer.onPositionChanged.listen(
+      (position) {
+        if (mounted) setState(() => _musicPosition = position);
+      },
+    );
+    _musicDurationSubscription = _musicPlayer.onDurationChanged.listen(
+      (duration) {
+        if (mounted) setState(() => _musicDuration = duration);
+      },
+    );
     _restoreApiUrl();
     _refreshCapabilities();
     _applyInitialInput(widget.initialInput);
@@ -284,7 +305,7 @@ class _ToolsPageState extends State<ToolsPage> {
       _statusMessage = null;
       _job = null;
       _saveProgress = 0;
-      _musicResults = const [];
+      if (tool != 'music') _musicResults = const [];
       _sniffedResources = const [];
     }
 
@@ -307,6 +328,10 @@ class _ToolsPageState extends State<ToolsPage> {
 
   @override
   void dispose() {
+    unawaited(_musicStateSubscription?.cancel());
+    unawaited(_musicPositionSubscription?.cancel());
+    unawaited(_musicDurationSubscription?.cancel());
+    unawaited(_musicPlayer.dispose());
     _api.close();
     _openMusic.close();
     _inputController.dispose();
@@ -506,6 +531,10 @@ class _ToolsPageState extends State<ToolsPage> {
                         final width =
                             (constraints.maxWidth - (columns - 1) * 12) /
                                 columns;
+                        final textScale =
+                            MediaQuery.textScalerOf(context).scale(12) / 12;
+                        final cardHeight =
+                            172.0 + (textScale > 1 ? (textScale - 1) * 72 : 0);
                         return Wrap(
                           spacing: 12,
                           runSpacing: 12,
@@ -513,6 +542,7 @@ class _ToolsPageState extends State<ToolsPage> {
                             for (final tool in _tools)
                               SizedBox(
                                 width: width,
+                                height: cardHeight,
                                 child: _ToolCard(
                                   tool: tool,
                                   selected: _selectedTool == tool.id,
@@ -588,7 +618,12 @@ class _ToolsPageState extends State<ToolsPage> {
                       _ToolResults(
                         musicResults: _musicResults,
                         sniffedResources: _sniffedResources,
+                        activeMusic: _activeMusic,
+                        playerState: _musicPlayerState,
+                        position: _musicPosition,
+                        duration: _musicDuration,
                         onPlayMusic: _playMusicResult,
+                        onSeekMusic: (position) => _musicPlayer.seek(position),
                         onDownloadMusic: _downloadMusicResult,
                         onDownloadUrl: widget.onOpenParser,
                       ),
@@ -1028,14 +1063,40 @@ class _ToolsPageState extends State<ToolsPage> {
       if (mounted) setState(() => _error = '该来源没有提供可播放的试听音频');
       return;
     }
-    final uri = Uri.tryParse(target);
-    if (uri == null ||
-        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) setState(() => _error = '无法播放 ${result.sourceLabel} 音频');
+    try {
+      if (_activeMusic?.identifier == result.identifier) {
+        if (_musicPlayerState == PlayerState.playing) {
+          await _musicPlayer.pause();
+        } else {
+          if (_musicPlayerState == PlayerState.completed) {
+            await _musicPlayer.seek(Duration.zero);
+          }
+          await _musicPlayer.resume();
+        }
+        return;
+      }
+      await _musicPlayer.stop();
+      if (mounted) {
+        setState(() {
+          _activeMusic = result;
+          _musicPosition = Duration.zero;
+          _musicDuration = Duration.zero;
+          _error = null;
+        });
+      }
+      await _musicPlayer.play(UrlSource(target));
+    } on Object {
+      if (mounted) {
+        setState(() {
+          _musicPlayerState = PlayerState.stopped;
+          _error = '无法在软件内播放 ${result.sourceLabel} 音频';
+        });
+      }
     }
   }
 
   Future<void> _downloadMusicResult(MusicSearchResult result) async {
+    if (_busy) return;
     final files = await _loadMusicFiles(result);
     if (!mounted || files.isEmpty) return;
     final choices = [...files]
@@ -1070,6 +1131,14 @@ class _ToolsPageState extends State<ToolsPage> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: sheetContext.palette.textMuted),
                     ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '保存到：$_musicSaveDestinationLabel',
+                      style: TextStyle(
+                        color: sheetContext.palette.textMuted,
+                        fontSize: 12,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1101,8 +1170,125 @@ class _ToolsPageState extends State<ToolsPage> {
         ),
       ),
     );
-    if (selected != null) {
-      widget.onOpenParser(selected.downloadUrl);
+    if (selected != null) await _saveMusicFile(result, selected);
+  }
+
+  String get _musicSaveDestinationLabel {
+    if (widget.defaultSaveDestination == SaveDestination.custom) {
+      return '设置中的自选目录';
+    }
+    if (kIsWeb) return '浏览器下载目录';
+    if (defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.linux) {
+      return '下载时选择保存路径';
+    }
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return '“文件”App / langbai解析';
+    }
+    return 'Download / langbai解析';
+  }
+
+  Future<void> _saveMusicFile(
+    MusicSearchResult result,
+    MusicFile file,
+  ) async {
+    final uri = Uri.tryParse(file.downloadUrl);
+    if (uri == null || !const {'http', 'https'}.contains(uri.scheme)) {
+      setState(() => _error = '音乐下载地址无效');
+      return;
+    }
+    final destination = widget.defaultSaveDestination == SaveDestination.gallery
+        ? SaveDestination.files
+        : widget.defaultSaveDestination;
+    if (destination == SaveDestination.custom &&
+        widget.customSaveDestinationUri?.trim().isNotEmpty != true) {
+      setState(() => _error = '自选保存目录不可用，请先在设置中重新选择');
+      return;
+    }
+    final filename = _musicFilename(result, file);
+    var job = DownloadJob(
+      id: 'music-${DateTime.now().microsecondsSinceEpoch}',
+      state: JobState.running,
+      progress: 0,
+      filename: filename,
+    );
+    setState(() {
+      _busy = true;
+      _cancelRequested = false;
+      _error = null;
+      _statusMessage = '正在下载 ${result.title}';
+      _saveProgress = 0;
+      _job = job;
+    });
+    _notifyToolJob(job);
+    try {
+      final saved = await saveDownload(
+        uri,
+        filename,
+        (progress) {
+          if (!mounted) return;
+          setState(() => _saveProgress = progress);
+        },
+        destination: destination,
+        mediaType: 'audio',
+        customDestinationUri: widget.customSaveDestinationUri,
+        isCancelled: () => _cancelRequested,
+        followRedirects: true,
+        onTransferProgress: (progress) {
+          if (!mounted) return;
+          job = DownloadJob(
+            id: job.id,
+            state:
+                progress.progress >= 1 ? JobState.completed : JobState.running,
+            progress: progress.progress,
+            filename: filename,
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            speedBytesPerSecond: progress.speedBytesPerSecond,
+            averageSpeedBytesPerSecond: progress.averageSpeedBytesPerSecond,
+            etaSeconds: progress.etaSeconds,
+          );
+          setState(() {
+            _job = job;
+            _saveProgress = progress.progress;
+          });
+          _notifyToolJob(job);
+        },
+      );
+      if (!mounted) return;
+      job = DownloadJob(
+        id: job.id,
+        state: saved.cancelled ? JobState.cancelled : JobState.completed,
+        progress: saved.cancelled ? _saveProgress : 1,
+        filename: filename,
+        downloadedBytes: job.downloadedBytes,
+        totalBytes: job.totalBytes,
+        speedBytesPerSecond: job.speedBytesPerSecond,
+        averageSpeedBytesPerSecond: job.averageSpeedBytesPerSecond,
+      );
+      setState(() {
+        _job = job;
+        _saveProgress = job.progress;
+        _statusMessage = saved.message;
+      });
+      _notifyToolJob(job);
+    } on Object catch (error) {
+      if (!mounted) return;
+      job = DownloadJob(
+        id: job.id,
+        state: _cancelRequested ? JobState.cancelled : JobState.failed,
+        progress: _saveProgress,
+        filename: filename,
+        error: _cancelRequested ? '下载已取消' : error.toString(),
+      );
+      setState(() {
+        _job = job;
+        _error = _cancelRequested ? '下载已取消' : '音乐下载失败：$error';
+      });
+      _notifyToolJob(job);
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -1292,6 +1478,8 @@ class _ToolCard extends StatelessWidget {
               const SizedBox(height: 18),
               Text(
                 tool.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
                   color: enabled ? null : context.palette.textMuted,
@@ -1308,6 +1496,7 @@ class _ToolCard extends StatelessWidget {
                   height: 1.45,
                 ),
               ),
+              const Spacer(),
               const SizedBox(height: 10),
               Semantics(
                 label: availability,
@@ -1871,14 +2060,24 @@ class _ToolResults extends StatelessWidget {
   const _ToolResults({
     required this.musicResults,
     required this.sniffedResources,
+    required this.activeMusic,
+    required this.playerState,
+    required this.position,
+    required this.duration,
     required this.onPlayMusic,
+    required this.onSeekMusic,
     required this.onDownloadMusic,
     required this.onDownloadUrl,
   });
 
   final List<MusicSearchResult> musicResults;
   final List<SniffedResource> sniffedResources;
+  final MusicSearchResult? activeMusic;
+  final PlayerState playerState;
+  final Duration position;
+  final Duration duration;
   final ValueChanged<MusicSearchResult> onPlayMusic;
+  final ValueChanged<Duration> onSeekMusic;
   final ValueChanged<MusicSearchResult> onDownloadMusic;
   final ValueChanged<String> onDownloadUrl;
 
@@ -1898,10 +2097,24 @@ class _ToolResults extends StatelessWidget {
             ),
           ),
           Divider(height: 1, color: context.palette.border),
+          if (musicResults.isNotEmpty && activeMusic != null) ...[
+            _MusicNowPlaying(
+              result: activeMusic!,
+              isPlaying: playerState == PlayerState.playing,
+              position: position,
+              duration: duration,
+              onToggle: () => onPlayMusic(activeMusic!),
+              onSeek: onSeekMusic,
+            ),
+            Divider(height: 1, color: context.palette.border),
+          ],
           if (musicResults.isNotEmpty)
             for (final result in musicResults.take(60))
               _MusicResultRow(
                 result: result,
+                isActive: activeMusic?.identifier == result.identifier,
+                isPlaying: activeMusic?.identifier == result.identifier &&
+                    playerState == PlayerState.playing,
                 onPlay: () => onPlayMusic(result),
                 onDownload: () => onDownloadMusic(result),
               )
@@ -1925,14 +2138,110 @@ class _ToolResults extends StatelessWidget {
   }
 }
 
+class _MusicNowPlaying extends StatelessWidget {
+  const _MusicNowPlaying({
+    required this.result,
+    required this.isPlaying,
+    required this.position,
+    required this.duration,
+    required this.onToggle,
+    required this.onSeek,
+  });
+
+  final MusicSearchResult result;
+  final bool isPlaying;
+  final Duration position;
+  final Duration duration;
+  final VoidCallback onToggle;
+  final ValueChanged<Duration> onSeek;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = duration.inMilliseconds;
+    final current = position.inMilliseconds.clamp(0, total > 0 ? total : 1);
+    return Container(
+      color: context.palette.surfaceRaised,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              IconButton.filled(
+                tooltip: isPlaying ? '暂停' : '继续播放',
+                onPressed: onToggle,
+                icon: Icon(
+                  isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isPlaying ? '正在软件内播放' : '已暂停',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      result.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    if (result.creator?.isNotEmpty == true)
+                      Text(
+                        result.creator!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: context.palette.textMuted,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Text(_clockDuration(position),
+                  style: const TextStyle(fontSize: 11)),
+              Expanded(
+                child: Slider(
+                  value: current.toDouble(),
+                  max: (total > 0 ? total : 1).toDouble(),
+                  onChanged: total > 0
+                      ? (value) => onSeek(Duration(milliseconds: value.round()))
+                      : null,
+                ),
+              ),
+              Text(_clockDuration(duration),
+                  style: const TextStyle(fontSize: 11)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _MusicResultRow extends StatelessWidget {
   const _MusicResultRow({
     required this.result,
+    required this.isActive,
+    required this.isPlaying,
     required this.onPlay,
     required this.onDownload,
   });
 
   final MusicSearchResult result;
+  final bool isActive;
+  final bool isPlaying;
   final VoidCallback onPlay;
   final VoidCallback onDownload;
 
@@ -1945,71 +2254,104 @@ class _MusicResultRow extends StatelessWidget {
       result.year,
       result.sourceLabel,
     ].whereType<String>().where((value) => value.isNotEmpty).join(' · ');
+    final info = Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: result.artworkUrl?.isNotEmpty == true
+              ? Image.network(
+                  result.artworkUrl!,
+                  width: 44,
+                  height: 44,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) => const SizedBox(
+                    width: 44,
+                    height: 44,
+                    child: Icon(Icons.album_outlined),
+                  ),
+                )
+              : const SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: Icon(Icons.album_outlined),
+                ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                result.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: context.palette.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+    final actions = Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      alignment: WrapAlignment.end,
+      children: [
+        if (previewAvailable)
+          TextButton.icon(
+            onPressed: onPlay,
+            icon: Icon(
+              isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+            ),
+            label: Text(isPlaying
+                ? '暂停'
+                : isActive
+                    ? '继续'
+                    : '播放'),
+          ),
+        if (result.canDownload)
+          FilledButton.tonalIcon(
+            onPressed: onDownload,
+            icon: const Icon(Icons.download_rounded),
+            label: const Text('下载'),
+          ),
+      ],
+    );
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: result.artworkUrl?.isNotEmpty == true
-                    ? Image.network(
-                        result.artworkUrl!,
-                        width: 44,
-                        height: 44,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) =>
-                            const SizedBox(
-                          width: 44,
-                          height: 44,
-                          child: Icon(Icons.album_outlined),
-                        ),
-                      )
-                    : const SizedBox(
-                        width: 44,
-                        height: 44,
-                        child: Icon(Icons.album_outlined),
-                      ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth < 520) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Text(
-                      result.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (subtitle.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: context.palette.textMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
+                    info,
+                    const SizedBox(height: 8),
+                    Align(alignment: Alignment.centerRight, child: actions),
                   ],
-                ),
-              ),
-              if (previewAvailable)
-                IconButton(
-                  tooltip: '播放',
-                  onPressed: onPlay,
-                  icon: const Icon(Icons.play_circle_outline_rounded),
-                ),
-              if (result.canDownload)
-                IconButton.filledTonal(
-                  tooltip: '选择音质并下载',
-                  onPressed: onDownload,
-                  icon: const Icon(Icons.download_rounded),
-                ),
-            ],
+                );
+              }
+              return Row(
+                children: [
+                  Expanded(child: info),
+                  const SizedBox(width: 12),
+                  actions,
+                ],
+              );
+            },
           ),
         ),
         Divider(height: 1, color: context.palette.border),
@@ -2083,6 +2425,32 @@ String _humanBytes(int bytes) {
     value /= 1024;
   }
   return '$bytes B';
+}
+
+String _clockDuration(Duration value) {
+  final total = value.inSeconds.clamp(0, 24 * 60 * 60);
+  final minutes = total ~/ 60;
+  final seconds = total % 60;
+  return '$minutes:${seconds.toString().padLeft(2, '0')}';
+}
+
+String _musicFilename(MusicSearchResult result, MusicFile file) {
+  final fileExtension = _fileExtension(file.name);
+  final formatExtension = _normalizeExtension(file.format).split(' ').first;
+  final extension = _audioMediaFormats.contains(fileExtension)
+      ? fileExtension
+      : _audioMediaFormats.contains(formatExtension)
+          ? formatExtension
+          : 'mp3';
+  final creator = result.creator?.trim();
+  final raw = creator == null || creator.isEmpty
+      ? result.title
+      : '${result.title} - $creator';
+  final safe = raw
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return '${safe.isEmpty ? 'langbai-music' : safe}.$extension';
 }
 
 int _musicFileScore(MusicFile file) {

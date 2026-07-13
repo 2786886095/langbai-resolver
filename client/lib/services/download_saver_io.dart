@@ -17,17 +17,18 @@ Future<SaveResult> saveDownload(
   bool Function()? isCancelled,
   String? customDestinationUri,
   TransferProgressCallback? onTransferProgress,
+  bool followRedirects = false,
 }) async {
   late final File target;
   final isMobile = Platform.isAndroid || Platform.isIOS;
   if (isMobile) {
     final directory =
         destination == SaveDestination.gallery || Platform.isAndroid
-        ? await getTemporaryDirectory()
-        : Directory(
-            '${(await getApplicationDocumentsDirectory()).path}'
-            '${Platform.pathSeparator}langbai解析',
-          );
+            ? await getTemporaryDirectory()
+            : Directory(
+                '${(await getApplicationDocumentsDirectory()).path}'
+                '${Platform.pathSeparator}langbai解析',
+              );
     await directory.create(recursive: true);
     target = _availableFile(directory, filename);
   } else {
@@ -63,12 +64,11 @@ Future<SaveResult> saveDownload(
   IOSink? sink;
   try {
     final request = http.Request('GET', uri)
-      ..followRedirects = false
-      ..maxRedirects = 0
+      ..followRedirects = followRedirects
+      ..maxRedirects = followRedirects ? 5 : 0
       ..headers.addAll(headers);
-    final response = await client
-        .send(request)
-        .timeout(const Duration(seconds: 30));
+    final response =
+        await client.send(request).timeout(const Duration(seconds: 30));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('文件下载失败（${response.statusCode}）', uri: uri);
     }
@@ -102,10 +102,9 @@ Future<SaveResult> saveDownload(
       }
       final shouldEmit =
           elapsed - lastElapsed >= const Duration(milliseconds: 250) ||
-          (total != null && received >= total);
+              (total != null && received >= total);
       if (shouldEmit) {
-        final intervalSeconds =
-            (elapsed - lastElapsed).inMicroseconds /
+        final intervalSeconds = (elapsed - lastElapsed).inMicroseconds /
             Duration.microsecondsPerSecond;
         final instant = intervalSeconds <= 0
             ? null
@@ -126,7 +125,7 @@ Future<SaveResult> saveDownload(
             averageSpeedBytesPerSecond: elapsed.inMicroseconds <= 0
                 ? null
                 : received /
-                      (elapsed.inMicroseconds / Duration.microsecondsPerSecond),
+                    (elapsed.inMicroseconds / Duration.microsecondsPerSecond),
           ),
         );
         lastReceived = received;
@@ -164,12 +163,12 @@ Future<SaveResult> saveDownload(
     try {
       final raw = await const MethodChannel('com.langbai.resolver/local_media')
           .invokeMapMethod<String, dynamic>('saveMobileFile', {
-            'path': target.path,
-            'filename': filename,
-            'save_destination': destination.name,
-            'custom_destination_uri': customDestinationUri,
-            'media_type': mediaType,
-          });
+        'path': target.path,
+        'filename': filename,
+        'save_destination': destination.name,
+        'custom_destination_uri': customDestinationUri,
+        'media_type': mediaType,
+      });
       if (raw == null) {
         throw PlatformException(
           code: 'SAVE_RESULT_MISSING',
@@ -178,8 +177,7 @@ Future<SaveResult> saveDownload(
       }
       reportPublished();
       return SaveResult(
-        message:
-            raw['message']?.toString() ??
+        message: raw['message']?.toString() ??
             (destination == SaveDestination.gallery
                 ? '已保存到系统相册'
                 : '已保存到 Download/langbai解析'),

@@ -10,6 +10,7 @@ Future<SaveResult> saveDownload(
   bool Function()? isCancelled,
   String? customDestinationUri,
   TransferProgressCallback? onTransferProgress,
+  bool followRedirects = false,
 }) {
   throw UnsupportedError('当前平台暂不支持文件保存');
 }

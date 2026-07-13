@@ -1,7 +1,6 @@
 import 'download_saver_stub.dart'
     if (dart.library.io) 'download_saver_io.dart'
-    if (dart.library.html) 'download_saver_web.dart'
-    as implementation;
+    if (dart.library.html) 'download_saver_web.dart' as implementation;
 import 'download_types.dart';
 
 export 'download_types.dart';
@@ -16,6 +15,7 @@ Future<SaveResult> saveDownload(
   bool Function()? isCancelled,
   String? customDestinationUri,
   TransferProgressCallback? onTransferProgress,
+  bool followRedirects = false,
 }) {
   return implementation.saveDownload(
     uri,
@@ -27,5 +27,6 @@ Future<SaveResult> saveDownload(
     isCancelled: isCancelled,
     customDestinationUri: customDestinationUri,
     onTransferProgress: onTransferProgress,
+    followRedirects: followRedirects,
   );
 }
