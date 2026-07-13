@@ -43,16 +43,16 @@ void main() {
       expect(find.byType(DropTarget), findsOneWidget);
       expect(find.text('返回工具箱'), findsOneWidget);
 
-      await tester.tap(find.text('返回工具箱'));
+      await tester.pageBack();
       await tester.pumpAndSettle();
       expect(find.text('工具箱'), findsOneWidget);
       expect(find.byType(DropTarget), findsNothing);
 
-      await tester.ensureVisible(find.text('格式转换'));
-      await tester.tap(find.text('格式转换'));
+      await tester.ensureVisible(find.text('视频与图片解析'));
+      await tester.tap(find.text('视频与图片解析'));
       await tester.pumpAndSettle();
       expect(find.text('返回工具箱'), findsOneWidget);
-      expect(find.byType(DropTarget), findsOneWidget);
+      expect(find.text('解析网页媒体、分辨率、音频和封面'), findsOneWidget);
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
@@ -123,8 +123,7 @@ void main() {
     expect(find.text('视频 · AVI'), findsOneWidget);
     expect(find.text('音频 · AC3'), findsOneWidget);
 
-    await tester.ensureVisible(find.text('返回工具箱'));
-    await tester.tap(find.text('返回工具箱'));
+    await tester.pageBack();
     await tester.pumpAndSettle();
     expect(find.text('本机可用'), findsWidgets);
     expect(find.text('手机端未内置 P2P'), findsOneWidget);
