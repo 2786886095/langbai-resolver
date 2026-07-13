@@ -146,11 +146,15 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '周杰伦');
 
+    await tester.tap(find.text('返回工具箱'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('公开直链下载').first);
     await tester.pumpAndSettle();
     final directField = tester.widget<TextField>(find.byType(TextField));
     expect(directField.controller!.text, isEmpty);
 
+    await tester.tap(find.text('返回工具箱'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('多源音乐搜索').first);
     await tester.pumpAndSettle();
     final musicField = tester.widget<TextField>(find.byType(TextField));
