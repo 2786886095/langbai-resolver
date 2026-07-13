@@ -14,7 +14,7 @@ import httpx
 from app.models import MusicFile, MusicSearchResult, MusicSourceStatus
 
 
-_USER_AGENT = "langbai-resolver/1.1.2 (https://github.com/2786886095/langbai-resolver)"
+_USER_AGENT = "langbai-resolver/1.1.3 (https://github.com/2786886095/langbai-resolver)"
 
 
 def _license_allows_download(value: object) -> bool:
