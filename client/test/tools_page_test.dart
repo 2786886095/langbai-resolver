@@ -62,27 +62,29 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
-    addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    try {
+      await tester.pumpWidget(app(initialInput: ''));
+      await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.pumpWidget(app(initialInput: ''));
-    await tester.pump(const Duration(milliseconds: 100));
-
-    final titles = [
-      '视频与图片解析',
-      '网页公开媒体识别',
-      '视频提取音频',
-      '媒体压缩',
-    ];
-    final heights = titles.map((title) {
-      final card = find
-          .ancestor(of: find.text(title), matching: find.byType(InkWell))
-          .first;
-      return tester.getSize(card).height;
-    }).toList();
-    expect(heights, everyElement(closeTo(heights.first, 0.1)));
-    expect(tester.takeException(), isNull);
+      final titles = [
+        '视频与图片解析',
+        '网页公开媒体识别',
+        '视频提取音频',
+        '媒体压缩',
+      ];
+      final heights = titles.map((title) {
+        final card = find
+            .ancestor(of: find.text(title), matching: find.byType(InkWell))
+            .first;
+        return tester.getSize(card).height;
+      }).toList();
+      expect(heights, everyElement(closeTo(heights.first, 0.1)));
+      expect(tester.takeException(), isNull);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }
   });
 
   testWidgets('mobile conversion only exposes native reported formats', (
