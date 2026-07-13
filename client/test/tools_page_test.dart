@@ -113,6 +113,7 @@ void main() {
     expect(find.text('本机可用'), findsWidgets);
     expect(find.text('手机端未内置 P2P'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('native probe does not expose or route a remote cancel action', (
