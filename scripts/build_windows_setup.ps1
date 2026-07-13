@@ -176,18 +176,27 @@ Copy-Item -Path (Join-Path $BackendDist "*") -Destination $BackendBundle -Recurs
 
 # Ship the supported Visual C++ runtime app-locally, so a clean non-admin
 # Windows account does not need a separate redistributable installation.
+$VcInstallations = @()
+$VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path -LiteralPath $VsWhere -PathType Leaf) {
+    $VcInstallations = @(& $VsWhere -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath) |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+}
 $VcRedistRoots = @(
     $env:VCToolsRedistDir,
     (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022"),
-    (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022")
+    (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022"),
+    @($VcInstallations | ForEach-Object { Join-Path $_ "VC\Redist\MSVC" })
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
 $VcRuntimeDirectory = $VcRedistRoots |
     ForEach-Object {
         Get-ChildItem -LiteralPath $_ -Filter "Microsoft.VC143.CRT" `
             -Directory -Recurse -ErrorAction SilentlyContinue
     } |
-    Where-Object { $_.FullName -match '\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC143\.CRT$' } |
-    Sort-Object { [version]$_.Parent.Parent.Name } -Descending |
+    Where-Object { $_.FullName -match '\\x64\\Microsoft\.VC143\.CRT$' } |
+    Sort-Object FullName -Descending |
     Select-Object -First 1
 if (-not $VcRuntimeDirectory) {
     throw "The Visual C++ x64 app-local runtime was not found. Install the Visual Studio 2022 C++ desktop workload."
