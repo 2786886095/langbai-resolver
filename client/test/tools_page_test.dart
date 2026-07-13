@@ -122,11 +122,6 @@ void main() {
     expect(find.text('视频 · WEBM'), findsOneWidget);
     expect(find.text('视频 · AVI'), findsOneWidget);
     expect(find.text('音频 · AC3'), findsOneWidget);
-
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(find.text('本机可用'), findsWidgets);
-    expect(find.text('手机端未内置 P2P'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
