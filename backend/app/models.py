@@ -124,6 +124,8 @@ class MusicFile(BaseModel):
     name: str
     format: str
     size: int | None = None
+    bitrate: int | None = None
+    sample_rate: int | None = None
     download_url: str
 
 

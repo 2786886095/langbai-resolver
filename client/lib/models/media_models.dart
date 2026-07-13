@@ -142,20 +142,20 @@ class DownloadJob {
   }
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'state': state.name,
-    'progress': progress,
-    if (filename != null) 'filename': filename,
-    if (error != null) 'error': error,
-    if (downloadedBytes != null) 'downloaded_bytes': downloadedBytes,
-    if (totalBytes != null) 'total_bytes': totalBytes,
-    if (speedBytesPerSecond != null)
-      'speed_bytes_per_second': speedBytesPerSecond,
-    if (averageSpeedBytesPerSecond != null)
-      'average_speed_bytes_per_second': averageSpeedBytesPerSecond,
-    if (etaSeconds != null) 'eta_seconds': etaSeconds,
-    if (downloadUrl != null) 'download_url': downloadUrl,
-  };
+        'id': id,
+        'state': state.name,
+        'progress': progress,
+        if (filename != null) 'filename': filename,
+        if (error != null) 'error': error,
+        if (downloadedBytes != null) 'downloaded_bytes': downloadedBytes,
+        if (totalBytes != null) 'total_bytes': totalBytes,
+        if (speedBytesPerSecond != null)
+          'speed_bytes_per_second': speedBytesPerSecond,
+        if (averageSpeedBytesPerSecond != null)
+          'average_speed_bytes_per_second': averageSpeedBytesPerSecond,
+        if (etaSeconds != null) 'eta_seconds': etaSeconds,
+        if (downloadUrl != null) 'download_url': downloadUrl,
+      };
 
   final String id;
   final JobState state;
@@ -180,20 +180,21 @@ class DownloadJob {
     double? averageSpeedBytesPerSecond,
     int? etaSeconds,
     String? downloadUrl,
-  }) => DownloadJob(
-    id: id,
-    state: state ?? this.state,
-    progress: progress ?? this.progress,
-    filename: filename ?? this.filename,
-    error: error ?? this.error,
-    downloadedBytes: downloadedBytes ?? this.downloadedBytes,
-    totalBytes: totalBytes ?? this.totalBytes,
-    speedBytesPerSecond: speedBytesPerSecond ?? this.speedBytesPerSecond,
-    averageSpeedBytesPerSecond:
-        averageSpeedBytesPerSecond ?? this.averageSpeedBytesPerSecond,
-    etaSeconds: etaSeconds ?? this.etaSeconds,
-    downloadUrl: downloadUrl ?? this.downloadUrl,
-  );
+  }) =>
+      DownloadJob(
+        id: id,
+        state: state ?? this.state,
+        progress: progress ?? this.progress,
+        filename: filename ?? this.filename,
+        error: error ?? this.error,
+        downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+        totalBytes: totalBytes ?? this.totalBytes,
+        speedBytesPerSecond: speedBytesPerSecond ?? this.speedBytesPerSecond,
+        averageSpeedBytesPerSecond:
+            averageSpeedBytesPerSecond ?? this.averageSpeedBytesPerSecond,
+        etaSeconds: etaSeconds ?? this.etaSeconds,
+        downloadUrl: downloadUrl ?? this.downloadUrl,
+      );
 
   DownloadJob waitingForPublication() =>
       copyWith(state: JobState.running, progress: 0);
@@ -208,11 +209,11 @@ class DownloadJob {
 }
 
 int? _intFromJson(Object? value) => switch (value) {
-  final int number => number,
-  final num number => number.toInt(),
-  final String text => int.tryParse(text),
-  _ => null,
-};
+      final int number => number,
+      final num number => number.toInt(),
+      final String text => int.tryParse(text),
+      _ => null,
+    };
 
 class MusicSearchResult {
   const MusicSearchResult({
@@ -270,6 +271,8 @@ class MusicFile {
     required this.format,
     required this.downloadUrl,
     this.size,
+    this.bitrate,
+    this.sampleRate,
   });
 
   factory MusicFile.fromJson(Map<String, dynamic> json) {
@@ -278,6 +281,8 @@ class MusicFile {
       format: json['format'] as String,
       downloadUrl: json['download_url'] as String,
       size: (json['size'] as num?)?.toInt(),
+      bitrate: (json['bitrate'] as num?)?.toInt(),
+      sampleRate: (json['sample_rate'] as num?)?.toInt(),
     );
   }
 
@@ -285,6 +290,8 @@ class MusicFile {
   final String format;
   final String downloadUrl;
   final int? size;
+  final int? bitrate;
+  final int? sampleRate;
 }
 
 class SniffedResource {

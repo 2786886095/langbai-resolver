@@ -26,9 +26,9 @@ void main() {
   });
 
   Widget app({String initialInput = 'convert'}) => MaterialApp(
-    theme: LangbaiTheme.light(),
-    home: ToolsPage(initialInput: initialInput, onOpenParser: (_) {}),
-  );
+        theme: LangbaiTheme.light(),
+        home: ToolsPage(initialInput: initialInput, onOpenParser: (_) {}),
+      );
 
   testWidgets('desktop conversion workspace accepts OS file drops', (
     tester,
@@ -40,6 +40,17 @@ void main() {
 
       expect(find.text('格式转换'), findsWidgets);
       expect(find.text('第 1 步 · 拖入文件，或点击选择'), findsOneWidget);
+      expect(find.byType(DropTarget), findsOneWidget);
+      expect(find.text('返回工具箱'), findsOneWidget);
+
+      await tester.tap(find.text('返回工具箱'));
+      await tester.pumpAndSettle();
+      expect(find.text('工具箱'), findsOneWidget);
+      expect(find.byType(DropTarget), findsNothing);
+
+      await tester.tap(find.text('格式转换'));
+      await tester.pumpAndSettle();
+      expect(find.text('返回工具箱'), findsOneWidget);
       expect(find.byType(DropTarget), findsOneWidget);
     } finally {
       debugDefaultTargetPlatformOverride = null;
@@ -53,37 +64,37 @@ void main() {
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
-          if (call.method == 'getCapabilities') {
-            return <String, Object?>{
-              'platform': 'android',
-              'local_resolver': true,
-              'format_conversion': true,
-              'media_probe': true,
-              'conversion_progress': true,
-              'conversion_cancellation': true,
-              'conversion': {
-                'input_extensions': ['mp4', 'mkv'],
-                'output_formats': [
-                  'mp4',
-                  'webm',
-                  'avi',
-                  'm4a',
-                  'ac3',
-                  'jpg',
-                  'tiff',
-                ],
-                'quality_values': ['medium', 'high'],
-              },
-              'tools': <String, bool>{},
-            };
-          }
-          return null;
-        });
+      if (call.method == 'getCapabilities') {
+        return <String, Object?>{
+          'platform': 'android',
+          'local_resolver': true,
+          'format_conversion': true,
+          'media_probe': true,
+          'conversion_progress': true,
+          'conversion_cancellation': true,
+          'conversion': {
+            'input_extensions': ['mp4', 'mkv'],
+            'output_formats': [
+              'mp4',
+              'webm',
+              'avi',
+              'm4a',
+              'ac3',
+              'jpg',
+              'tiff',
+            ],
+            'quality_values': ['medium', 'high'],
+          },
+          'tools': <String, bool>{},
+        };
+      }
+      return null;
+    });
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_fileSelectorChannel, (call) async {
-          expect(call.method, 'openFile');
-          return <String>['/tmp/sample.mp4'];
-        });
+      expect(call.method, 'openFile');
+      return <String>['/tmp/sample.mp4'];
+    });
     tester.view.physicalSize = const Size(320, 568);
     tester.view.devicePixelRatio = 1;
     tester.platformDispatcher.textScaleFactorTestValue = 2;
@@ -125,28 +136,28 @@ void main() {
     var filePickerCalls = 0;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
-          if (call.method == 'getCapabilities') {
-            return <String, Object?>{
-              'platform': 'android',
-              'local_resolver': true,
-              'media_probe': true,
-              'tools': <String, bool>{'metadata': true},
-            };
-          }
-          if (call.method == 'probeMedia') {
-            probeCalls++;
-            return probe.future;
-          }
-          fail('unexpected local method ${call.method}');
-        });
+      if (call.method == 'getCapabilities') {
+        return <String, Object?>{
+          'platform': 'android',
+          'local_resolver': true,
+          'media_probe': true,
+          'tools': <String, bool>{'metadata': true},
+        };
+      }
+      if (call.method == 'probeMedia') {
+        probeCalls++;
+        return probe.future;
+      }
+      fail('unexpected local method ${call.method}');
+    });
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_fileSelectorChannel, (call) async {
-          filePickerCalls++;
-          expect(call.method, 'openFile');
-          return <String>[
-            Platform.isWindows ? r'C:\tmp\sample.mp4' : '/tmp/sample.mp4',
-          ];
-        });
+      filePickerCalls++;
+      expect(call.method, 'openFile');
+      return <String>[
+        Platform.isWindows ? r'C:\tmp\sample.mp4' : '/tmp/sample.mp4',
+      ];
+    });
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
     await tester.pumpWidget(app(initialInput: 'metadata'));
