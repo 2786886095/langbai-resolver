@@ -907,7 +907,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       applicationVersion: appVersion,
       applicationIcon: ClipOval(
         child: Image.asset(
-          'assets/images/langbai_avatar.png',
+          'assets/images/langbai_avatar.webp',
           width: 52,
           height: 52,
         ),
@@ -1333,7 +1333,7 @@ class _Brand extends StatelessWidget {
           ),
           child: ClipOval(
             child: Image.asset(
-              'assets/images/langbai_avatar.png',
+              'assets/images/langbai_avatar.webp',
               fit: BoxFit.cover,
             ),
           ),

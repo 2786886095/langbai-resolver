@@ -1,41 +1,41 @@
 {
-  "version": "1.1.0",
-  "notes": "手机端适配、图片预览、本地格式转换、下载速度与 APK 直更改进。",
-  "published_at": "2026-07-11T00:00:00Z",
+  "version": "1.1.1",
+  "notes": "解析缓存与预热、自适应图片预览、全屏缩放、全面媒体格式转换与安装包体积优化。",
+  "published_at": "2026-07-12T00:00:00Z",
   "platforms": {
     "windows": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Setup.exe",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Setup.exe",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 123456789,
       "signing_certificate_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "android": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Android.apk",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Android.apk",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 190000000
     },
     "android-arm64": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Android-arm64.apk",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Android-arm64.apk",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 70000000
     },
     "android-armv7": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Android-armv7.apk",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Android-armv7.apk",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 65000000
     },
     "android-x86_64": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Android-x86_64.apk",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Android-x86_64.apk",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 74000000
     },
     "ios": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-iOS.ipa",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-iOS.ipa",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 70000000
     },
     "web": {
-      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.0/langbai-resolver-Web.zip",
+      "url": "https://github.com/OWNER/langbai-resolver/releases/download/v1.1.1/langbai-resolver-Web.zip",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 10000000
     }

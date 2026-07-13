@@ -36,6 +36,9 @@ import UniformTypeIdentifiers
       self?.handleLocalMedia(call, result: result)
     }
     GeneratedPluginRegistrant.register(with: self)
+    DispatchQueue.global(qos: .utility).async {
+      try? LBPythonRuntime.shared().initializeRuntime()
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -62,9 +65,13 @@ import UniformTypeIdentifiers
         "conversion": [
           "input_extensions": [
             "mp4", "m4v", "mov", "mp3", "m4a", "aac", "wav",
-            "jpg", "jpeg", "png", "heic", "heif",
+            "jpg", "jpeg", "png", "heic", "heif", "webp", "gif",
+            "bmp", "tiff", "tif",
           ],
-          "output_formats": ["mp4", "m4v", "mov", "m4a", "jpg", "jpeg", "png", "heic"],
+          "output_formats": [
+            "mp4", "m4v", "mov", "m4a", "jpg", "jpeg", "png", "heic",
+            "bmp", "tiff", "tif",
+          ],
           "quality_values": ["low", "medium", "high", "original"],
         ],
         "tools": [
@@ -1216,6 +1223,10 @@ import UniformTypeIdentifiers
     case "jpg", "jpeg": return "image/jpeg"
     case "png": return "image/png"
     case "heic", "heif": return "image/heic"
+    case "webp": return "image/webp"
+    case "gif": return "image/gif"
+    case "bmp": return "image/bmp"
+    case "tiff", "tif": return "image/tiff"
     default: return "application/octet-stream"
     }
   }
@@ -1265,6 +1276,23 @@ import UniformTypeIdentifiers
       )
       guard CGImageDestinationFinalize(destination) else {
         throw shortError(code: 56, message: "HEIC 转换失败")
+      }
+    case "bmp", "tiff", "tif":
+      guard let cgImage = image.cgImage else {
+        throw shortError(code: 56, message: "图片转换失败")
+      }
+      let type = format == "bmp" ? "com.microsoft.bmp" : "public.tiff"
+      guard let destination = CGImageDestinationCreateWithURL(
+        outputURL as CFURL,
+        type as CFString,
+        1,
+        nil
+      ) else {
+        throw shortError(code: 56, message: "此设备不支持写入 \(format.uppercased())")
+      }
+      CGImageDestinationAddImage(destination, cgImage, nil)
+      guard CGImageDestinationFinalize(destination) else {
+        throw shortError(code: 56, message: "\(format.uppercased()) 转换失败")
       }
     default:
       throw shortError(code: 52, message: "图片不能转换为该格式")
@@ -1485,8 +1513,12 @@ import UniformTypeIdentifiers
   }
 
   private enum IOSConversion {
-    static let imageInputs: Set<String> = ["jpg", "jpeg", "png", "heic", "heif"]
-    static let imageOutputs: Set<String> = ["jpg", "jpeg", "png", "heic"]
+    static let imageInputs: Set<String> = [
+      "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "tiff", "tif",
+    ]
+    static let imageOutputs: Set<String> = [
+      "jpg", "jpeg", "png", "heic", "bmp", "tiff", "tif",
+    ]
     static let outputFormats: Set<String> = imageOutputs.union(["mp4", "m4v", "mov", "m4a"])
   }
 

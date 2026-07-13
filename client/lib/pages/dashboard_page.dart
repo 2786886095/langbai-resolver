@@ -156,7 +156,7 @@ class _ManualLinkPanel extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Image.asset(
-                    'assets/images/langbai_mascot.png',
+                    'assets/images/langbai_mascot.webp',
                     height: 280,
                     fit: BoxFit.contain,
                   ),

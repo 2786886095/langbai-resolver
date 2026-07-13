@@ -222,9 +222,9 @@ def _base_options(cookie_file: str | None = None) -> dict[str, Any]:
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
-        "socket_timeout": 25,
-        "retries": 2,
-        "extractor_retries": 2,
+        "socket_timeout": 20,
+        "retries": 1,
+        "extractor_retries": 1,
         "http_headers": {"User-Agent": _YTDLP_USER_AGENT},
         "extractor_args": {
             "youtube": {"player_client": ["ios", "android_vr", "web_safari"]}
@@ -609,9 +609,7 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
     options: list[dict[str, object]] = []
     video = item.get("video") if isinstance(item.get("video"), dict) else {}
     images = [value for value in (item.get("images") or []) if isinstance(value, dict)]
-    original_play_url = _first_http_url(
-        (video.get("play_addr") or {}).get("url_list")
-    )
+    original_play_url = _first_http_url((video.get("play_addr") or {}).get("url_list"))
     play_url = (
         normalize_douyin_play_url(original_play_url) if original_play_url else None
     )

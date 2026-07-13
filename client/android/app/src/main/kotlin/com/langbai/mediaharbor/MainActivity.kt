@@ -48,6 +48,7 @@ class MainActivity : FlutterActivity() {
     private val worker = Executors.newFixedThreadPool(3)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resolved = ConcurrentHashMap<String, LocalMedia>()
+    private val resolvedBySource = ConcurrentHashMap<String, CachedResolution>()
     private val activeConnections = ConcurrentHashMap<String, HttpURLConnection>()
     private val cancelledProcesses = ConcurrentHashMap.newKeySet<String>()
     private val progressState = ConcurrentHashMap<String, ProgressState>()
@@ -94,6 +95,12 @@ class MainActivity : FlutterActivity() {
             "com.langbai.resolver/local_media",
         )
         channel.setMethodCallHandler(::handleMethodCall)
+        worker.execute {
+            runCatching {
+                Thread.sleep(700)
+                ensureEngine()
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -616,6 +623,7 @@ class MainActivity : FlutterActivity() {
 
     private fun clearSession() {
         resolved.clear()
+        resolvedBySource.clear()
         (activeConnections.keys + progressState.keys).toSet().forEach(::cancelDownload)
         formatConverter.cancelAll()
         activeConversionTasks.forEach(cancelledConversionTasks::add)
@@ -634,11 +642,18 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun resolveLocally(url: String, bilibiliCookie: String?): Map<String, Any?> {
+        val sourceCacheKey = "$url\u0000${bilibiliCookie.orEmpty()}"
+        val now = System.currentTimeMillis()
+        resolvedBySource[sourceCacheKey]
+            ?.takeIf {
+                now - it.createdAt < RESOLVE_CACHE_TTL_MS && resolved.containsKey(it.mediaId)
+            }
+            ?.let { return it.payload }
         if (isKuaishouUrl(url)) {
-            return resolveKuaishouShare(url)
+            return cacheResolvedResponse(sourceCacheKey, resolveKuaishouShare(url))
         }
         if (isDouyinUrl(url)) {
-            return resolveDouyinShare(url)
+            return cacheResolvedResponse(sourceCacheKey, resolveDouyinShare(url))
         }
         ensureEngine()
         val response = engineLock.read {
@@ -648,7 +663,8 @@ class MainActivity : FlutterActivity() {
                     .addOption("--no-playlist")
                     .addOption("--skip-download")
                     .addOption("--socket-timeout", "25")
-                    .addOption("--retries", "2")
+                    .addOption("--retries", "1")
+                    .addOption("--extractor-retries", "1")
                 cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
                 YoutubeDL.getInstance().execute(request)
             }
@@ -698,7 +714,7 @@ class MainActivity : FlutterActivity() {
         resolved[mediaId] = LocalMedia(sourceUrl, title, specs, bilibiliCookie)
         if (resolved.size > 80) resolved.keys.firstOrNull()?.let(resolved::remove)
 
-        return mapOf(
+        return cacheResolvedResponse(sourceCacheKey, mapOf(
             "media_id" to mediaId,
             "source_url" to sourceUrl,
             "title" to title,
@@ -719,7 +735,24 @@ class MainActivity : FlutterActivity() {
                 bilibiliCookie?.let { "已使用本机加密保存的B站登录会话请求最高画质。" },
                 "由 Android 本机解析，媒体链接不会发送到 langbai 服务器。",
             ),
+        ))
+    }
+
+    private fun cacheResolvedResponse(
+        sourceCacheKey: String,
+        payload: Map<String, Any?>,
+    ): Map<String, Any?> {
+        val mediaId = payload["media_id"] as? String ?: return payload
+        resolvedBySource[sourceCacheKey] = CachedResolution(
+            mediaId = mediaId,
+            createdAt = System.currentTimeMillis(),
+            payload = payload,
         )
+        if (resolvedBySource.size > 32) {
+            resolvedBySource.entries.minByOrNull { it.value.createdAt }
+                ?.let { resolvedBySource.remove(it.key, it.value) }
+        }
+        return payload
     }
 
     private fun extractHttpUrl(value: String): String? =
@@ -1920,6 +1953,12 @@ class MainActivity : FlutterActivity() {
         val bilibiliCookie: String? = null,
     )
 
+    private data class CachedResolution(
+        val mediaId: String,
+        val createdAt: Long,
+        val payload: Map<String, Any?>,
+    )
+
     private data class LocalOption(
         val kind: String,
         val extension: String,
@@ -1968,6 +2007,7 @@ class MainActivity : FlutterActivity() {
         private const val STATE_PENDING_INSTALL_PROCESS = "langbai.pending_install_process"
         private const val MAX_HTML_BYTES = 8 * 1024 * 1024
         private const val MAX_DOWNLOAD_BYTES = 8L * 1024 * 1024 * 1024
+        private const val RESOLVE_CACHE_TTL_MS = 5L * 60 * 1000
         private const val DOUYIN_MOBILE_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36"
         private const val KUAISHOU_MOBILE_USER_AGENT =

@@ -44,6 +44,8 @@ class ParserPage extends StatefulWidget {
 }
 
 class _ParserPageState extends State<ParserPage> {
+  final Map<String, _CachedResolution> _resolutionCache = {};
+
   final _urlController = TextEditingController();
   late final TextEditingController _serverController;
   late ApiClient _api;
@@ -129,6 +131,7 @@ class _ParserPageState extends State<ParserPage> {
 
   Future<void> _logoutBilibili() async {
     await BilibiliAuthService.instance.logout();
+    _resolutionCache.clear();
     if (LocalMediaService.isSupported) {
       await LocalMediaService.instance.clearNativeSession();
     }
@@ -212,19 +215,34 @@ class _ParserPageState extends State<ParserPage> {
         if (kIsWeb && loopback) {
           throw const ApiException('Web 版尚未配置解析服务，请先在设置中填写 HTTPS 服务地址');
         }
-        if (!await _api.isHealthy()) {
-          throw const ApiException('解析服务未连接或身份校验失败，请检查设置后重试');
-        }
       }
       final bilibiliCookie = _bilibiliLoginAvailable && _isBilibiliUrl(url)
           ? BilibiliAuthService.instance.cookieHeader
           : null;
-      final media = _usesLocalParser
+      final cacheKey = [
+        _usesLocalParser ? 'local' : _api.baseUrl,
+        url,
+        bilibiliCookie?.hashCode ?? 0,
+      ].join('|');
+      final now = DateTime.now();
+      final cached = _resolutionCache[cacheKey];
+      final media = cached != null && cached.expiresAt.isAfter(now)
+          ? cached.media
+          : _usesLocalParser
           ? await LocalMediaService.instance.resolve(
               url,
               bilibiliCookie: bilibiliCookie,
             )
           : await _api.resolve(url, bilibiliCookie: bilibiliCookie);
+      if (cached == null || !cached.expiresAt.isAfter(now)) {
+        _resolutionCache[cacheKey] = _CachedResolution(
+          media: media,
+          expiresAt: now.add(const Duration(seconds: 45)),
+        );
+        while (_resolutionCache.length > 20) {
+          _resolutionCache.remove(_resolutionCache.keys.first);
+        }
+      }
       if (!mounted) return;
       final availableKinds = media.availableKinds;
       if (availableKinds.isEmpty) {
@@ -612,6 +630,7 @@ class _ParserPageState extends State<ParserPage> {
       return;
     }
     final token = await ServiceCredentialStore.readTokenFor(normalized);
+    _resolutionCache.clear();
     _api.close();
     setState(() {
       _api = ApiClient(normalized, instanceToken: token.isEmpty ? null : token);
@@ -1147,6 +1166,13 @@ class _ErrorBanner extends StatelessWidget {
   }
 }
 
+class _CachedResolution {
+  const _CachedResolution({required this.media, required this.expiresAt});
+
+  final MediaInfo media;
+  final DateTime expiresAt;
+}
+
 class _MediaPreview extends StatelessWidget {
   const _MediaPreview({
     required this.media,
@@ -1163,35 +1189,203 @@ class _MediaPreview extends StatelessWidget {
     final previewUrl = kind == AssetKind.image
         ? option?.previewUrl ?? media.thumbnailUrl
         : media.thumbnailUrl;
-    return AspectRatio(
-      aspectRatio: kind == AssetKind.image ? 4 / 3 : 16 / 9,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: context.palette.surfaceRaised),
-          child: previewUrl == null
-              ? Center(
-                  child: Icon(
-                    kind == AssetKind.image
-                        ? Icons.image_outlined
-                        : kind == AssetKind.audio
-                        ? Icons.graphic_eq_rounded
-                        : Icons.movie_filter_rounded,
-                    size: 44,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final imageHeight = (constraints.maxWidth * 0.78).clamp(220.0, 560.0);
+        final child = ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: DecoratedBox(
+            decoration: BoxDecoration(color: context.palette.surfaceRaised),
+            child: previewUrl == null
+                ? Center(
+                    child: Icon(
+                      kind == AssetKind.image
+                          ? Icons.image_outlined
+                          : kind == AssetKind.audio
+                          ? Icons.graphic_eq_rounded
+                          : Icons.movie_filter_rounded,
+                      size: 44,
+                    ),
+                  )
+                : _NetworkPreview(
+                    key: ValueKey('media-preview-${option?.id ?? kind.name}'),
+                    url: previewUrl,
+                    cacheWidth: kind == AssetKind.image ? 1280 : 960,
+                    allowFullscreen: kind == AssetKind.image,
                   ),
-                )
-              : Image.network(
-                  previewUrl,
-                  key: ValueKey('media-preview-${option?.id ?? kind.name}'),
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => const Center(
-                    child: Icon(Icons.broken_image_outlined, size: 42),
-                  ),
-                ),
+          ),
+        );
+        if (kind == AssetKind.image) {
+          return SizedBox(height: imageHeight, child: child);
+        }
+        return AspectRatio(aspectRatio: 16 / 9, child: child);
+      },
+    );
+  }
+}
+
+class _NetworkPreview extends StatefulWidget {
+  const _NetworkPreview({
+    super.key,
+    required this.url,
+    required this.cacheWidth,
+    this.allowFullscreen = false,
+  });
+
+  final String url;
+  final int cacheWidth;
+  final bool allowFullscreen;
+
+  @override
+  State<_NetworkPreview> createState() => _NetworkPreviewState();
+}
+
+class _NetworkPreviewState extends State<_NetworkPreview> {
+  int _generation = 0;
+
+  Future<void> _retry() async {
+    final provider = ResizeImage.resizeIfNeeded(
+      widget.cacheWidth,
+      null,
+      NetworkImage(widget.url),
+    );
+    await provider.evict();
+    if (mounted) setState(() => _generation++);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = Image.network(
+      widget.url,
+      key: ValueKey('${widget.url}-$_generation'),
+      fit: BoxFit.contain,
+      alignment: Alignment.center,
+      cacheWidth: widget.cacheWidth,
+      filterQuality: FilterQuality.medium,
+      gaplessPlayback: true,
+      frameBuilder: (context, child, frame, synchronous) => AnimatedOpacity(
+        opacity: synchronous || frame != null ? 1 : 0,
+        duration: const Duration(milliseconds: 140),
+        child: child,
+      ),
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        final expected = progress.expectedTotalBytes;
+        final value = expected == null || expected <= 0
+            ? null
+            : progress.cumulativeBytesLoaded / expected;
+        return Center(
+          child: SizedBox.square(
+            dimension: 28,
+            child: CircularProgressIndicator(value: value, strokeWidth: 2.4),
+          ),
+        );
+      },
+      errorBuilder: (_, _, _) => Center(
+        child: TextButton.icon(
+          onPressed: _retry,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('重新加载'),
         ),
       ),
     );
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        image,
+        if (widget.allowFullscreen) ...[
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => _showFullscreenPreview(context, widget.url),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Positioned(
+            right: 10,
+            bottom: 10,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.62),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.zoom_out_map_rounded,
+                      color: Colors.white,
+                      size: 17,
+                    ),
+                    SizedBox(width: 5),
+                    Text(
+                      '点击预览',
+                      style: TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
+}
+
+Future<void> _showFullscreenPreview(BuildContext context, String url) {
+  return showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.94),
+    builder: (context) => Dialog.fullscreen(
+      backgroundColor: Colors.black,
+      child: SafeArea(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                minScale: 0.75,
+                maxScale: 6,
+                boundaryMargin: const EdgeInsets.all(80),
+                child: Center(
+                  child: Image.network(
+                    url,
+                    fit: BoxFit.contain,
+                    filterQuality: FilterQuality.high,
+                    gaplessPlayback: true,
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null
+                        ? child
+                        : const Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                            ),
+                          ),
+                    errorBuilder: (_, _, _) => const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white70,
+                      size: 52,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filledTonal(
+                tooltip: '关闭预览',
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 class _MediaDetails extends StatelessWidget {
@@ -1370,13 +1564,33 @@ class _ImageOptionTile extends StatelessWidget {
                             child: Icon(Icons.image_not_supported_outlined),
                           ),
                         )
-                      : Image.network(
-                          option.previewUrl!,
-                          key: ValueKey('image-option-preview-${option.id}'),
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const Center(
-                            child: Icon(Icons.broken_image_outlined),
-                          ),
+                      : Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _NetworkPreview(
+                              key: ValueKey(
+                                'image-option-preview-${option.id}',
+                              ),
+                              url: option.previewUrl!,
+                              cacheWidth: 560,
+                            ),
+                            Positioned(
+                              top: 6,
+                              right: 6,
+                              child: IconButton.filledTonal(
+                                tooltip: '预览大图',
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () => _showFullscreenPreview(
+                                  context,
+                                  option.previewUrl!,
+                                ),
+                                icon: const Icon(
+                                  Icons.fullscreen_rounded,
+                                  size: 19,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                 ),
                 Padding(
