@@ -100,6 +100,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('MP4'), findsNothing);
+    await tester.ensureVisible(find.text('选择本地文件'));
     await tester.tap(find.text('选择本地文件'));
     await tester.pumpAndSettle();
     expect(find.textContaining('MP4'), findsOneWidget);
