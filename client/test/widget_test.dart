@@ -97,7 +97,7 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.1.3 · 按当前平台检查'), findsOneWidget);
+    expect(find.text('当前版本 1.1.4 · 按当前平台检查'), findsOneWidget);
     expect(find.text('默认保存位置'), findsOneWidget);
     expect(find.text('识别剪贴板链接'), findsOneWidget);
     expect(find.text('高级工具服务'), findsNothing);
@@ -146,11 +146,15 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '周杰伦');
 
+    await tester.tap(find.text('返回工具箱'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('公开直链下载').first);
     await tester.pumpAndSettle();
     final directField = tester.widget<TextField>(find.byType(TextField));
     expect(directField.controller!.text, isEmpty);
 
+    await tester.tap(find.text('返回工具箱'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('多源音乐搜索').first);
     await tester.pumpAndSettle();
     final musicField = tester.widget<TextField>(find.byType(TextField));

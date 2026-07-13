@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.models import MusicSearchResult
 from app.services.music import OpenMusicService, _license_allows_download
+from app.services.music import _music_key
 
 
 def test_only_explicit_open_licenses_enable_downloads() -> None:
@@ -31,6 +32,7 @@ def _result(
         source=source,
         source_label=source_label,
         can_download=can_download,
+        preview_url=None if can_download else f"https://example.com/{identifier}.mp3",
     )
 
 
@@ -45,6 +47,7 @@ def test_music_search_merges_sources_and_deduplicates() -> None:
             can_download=True,
         )
     ]
+    service._search_openverse = lambda _q, _l: []  # type: ignore[method-assign]
     service._search_commons = lambda _q, _l: [  # type: ignore[method-assign]
         _result(
             "wikimedia_commons:2",
@@ -81,6 +84,7 @@ def test_music_source_failures_are_reported_and_not_cached() -> None:
     service._search_archive = lambda _q, _l: [  # type: ignore[method-assign]
         _result("internet_archive:1", "Available", "internet_archive", "Archive")
     ]
+    service._search_openverse = lambda _q, _l: []  # type: ignore[method-assign]
     service._search_commons = lambda _q, _l: (_ for _ in ()).throw(  # type: ignore[method-assign]
         RuntimeError("provider down")
     )
@@ -113,6 +117,7 @@ def test_same_music_query_uses_single_flight() -> None:
         ]
 
     service._search_archive = archive  # type: ignore[method-assign]
+    service._search_openverse = lambda _q, _l: []  # type: ignore[method-assign]
     service._search_commons = lambda _q, _l: []  # type: ignore[method-assign]
     service._search_audius = lambda _q, _l: []  # type: ignore[method-assign]
     service._search_musicbrainz = lambda _q, _l: []  # type: ignore[method-assign]
@@ -123,3 +128,29 @@ def test_same_music_query_uses_single_flight() -> None:
         second = executor.submit(service.search, "same query")
         assert first.result() == second.result()
     assert calls == 1
+
+
+def test_music_key_removes_edition_and_featured_suffixes() -> None:
+    assert _music_key("Same Song (Remastered 2026)", "Artist feat. Guest") == _music_key(
+        "Same Song", "Artist"
+    )
+
+
+def test_metadata_only_music_results_are_hidden() -> None:
+    service = OpenMusicService()
+    service._search_openverse = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_archive = lambda _q, _l: [  # type: ignore[method-assign]
+        MusicSearchResult(
+            identifier="internet_archive:metadata",
+            title="Metadata only",
+            creator="Artist",
+            item_url="https://example.com/metadata",
+            source="internet_archive",
+            source_label="Archive",
+        )
+    ]
+    service._search_commons = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_audius = lambda _q, _l: []  # type: ignore[method-assign]
+    service._search_itunes = lambda _q, _l: []  # type: ignore[method-assign]
+
+    assert service.search("metadata") == []

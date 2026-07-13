@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -14,7 +15,7 @@ import httpx
 from app.models import MusicFile, MusicSearchResult, MusicSourceStatus
 
 
-_USER_AGENT = "langbai-resolver/1.1.3 (https://github.com/2786886095/langbai-resolver)"
+_USER_AGENT = "langbai-resolver/1.1.4 (https://github.com/2786886095/langbai-resolver)"
 
 
 def _license_allows_download(value: object) -> bool:
@@ -52,6 +53,20 @@ def _metadata_value(metadata: object, key: str) -> str | None:
     return _plain_text(value)
 
 
+def _music_key(title: str, creator: str | None) -> str:
+    clean_title = re.sub(r"[（(\[].*?[）)\]]", "", title.casefold())
+    clean_title = re.sub(r"\b(?:feat|ft)\.?\b.*$", "", clean_title)
+    clean_creator = re.sub(
+        r"\b(?:feat|ft)\.?\b.*$", "", (creator or "").casefold()
+    )
+    primary_creator = re.split(r"[,/&、]", clean_creator, maxsplit=1)[0]
+    normalized = unicodedata.normalize("NFKD", f"{clean_title}{primary_creator}")
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", normalized)
+
+
 @dataclass(slots=True)
 class _SearchFlight:
     event: Event = field(default_factory=Event)
@@ -64,6 +79,9 @@ class OpenMusicService:
     _archive_identifier_pattern = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
     _numeric_identifier_pattern = re.compile(r"^[0-9]{1,20}$")
     _audius_identifier_pattern = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+    _openverse_identifier_pattern = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
 
     def __init__(
         self,
@@ -78,11 +96,11 @@ class OpenMusicService:
         self._flights: dict[str, _SearchFlight] = {}
         self._status_lock = Lock()
         initial_labels = {
+            "openverse": "Openverse",
             "internet_archive": "Internet Archive",
             "wikimedia_commons": "Wikimedia Commons",
             "audius": "Audius",
             "apple_music": "Apple Music",
-            "musicbrainz": "MusicBrainz",
         }
         if jamendo_client_id:
             initial_labels["jamendo"] = "Jamendo"
@@ -119,11 +137,11 @@ class OpenMusicService:
             return list(flight.results or ())
         per_source = min(max(limit // 3, 12), 24)
         providers = {
+            "openverse": self._search_openverse,
             "internet_archive": self._search_archive,
             "wikimedia_commons": self._search_commons,
             "audius": self._search_audius,
             "apple_music": self._search_itunes,
-            "musicbrainz": self._search_musicbrainz,
         }
         if self._jamendo_client_id:
             providers["jamendo"] = self._search_jamendo
@@ -131,12 +149,12 @@ class OpenMusicService:
         buckets: dict[str, list[MusicSearchResult]] = {}
         checked_at = time.time()
         labels = {
+            "openverse": "Openverse",
             "internet_archive": "Internet Archive",
             "wikimedia_commons": "Wikimedia Commons",
             "jamendo": "Jamendo",
             "audius": "Audius",
             "apple_music": "Apple Music",
-            "musicbrainz": "MusicBrainz",
         }
         statuses: dict[str, MusicSourceStatus] = {}
         with ThreadPoolExecutor(max_workers=len(providers)) as executor:
@@ -168,12 +186,12 @@ class OpenMusicService:
             self._statuses = statuses
 
         order = [
+            "openverse",
             "internet_archive",
             "wikimedia_commons",
             "jamendo",
             "audius",
             "apple_music",
-            "musicbrainz",
         ]
         merged: list[MusicSearchResult] = []
         positions = {name: 0 for name in order}
@@ -188,11 +206,9 @@ class OpenMusicService:
                 result = items[position]
                 positions[name] += 1
                 added = True
-                key = re.sub(
-                    r"[^a-z0-9\u4e00-\u9fff]+",
-                    "",
-                    f"{result.title}{result.creator or ''}".lower(),
-                )
+                if not result.preview_url and not result.can_download:
+                    continue
+                key = _music_key(result.title, result.creator)
                 if key and key in seen:
                     continue
                 if key:
@@ -223,6 +239,7 @@ class OpenMusicService:
         if not separator:
             provider, value = "internet_archive", identifier
         routes = {
+            "openverse": self._openverse_files,
             "internet_archive": self._archive_files,
             "wikimedia_commons": self._commons_files,
             "audius": self._audius_files,
@@ -232,6 +249,46 @@ class OpenMusicService:
         if not handler:
             return []
         return handler(value)
+
+    def _search_openverse(self, query: str, limit: int) -> list[MusicSearchResult]:
+        params = {
+            "q": query,
+            "page_size": str(limit),
+            "license_type": "commercial,modification",
+        }
+        with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
+            response = client.get("https://api.openverse.org/v1/audio/", params=params)
+            response.raise_for_status()
+        results: list[MusicSearchResult] = []
+        for item in response.json().get("results", []):
+            identifier = str(item.get("id") or "")
+            if not self._openverse_identifier_pattern.fullmatch(identifier):
+                continue
+            audio_url = str(item.get("url") or "")
+            license_value = " ".join(
+                str(value)
+                for value in (item.get("license"), item.get("license_version"))
+                if value
+            )
+            if not audio_url:
+                continue
+            duration = item.get("duration")
+            results.append(
+                MusicSearchResult(
+                    identifier=f"openverse:{identifier}",
+                    title=str(item.get("title") or identifier),
+                    creator=str(item.get("creator") or "") or None,
+                    item_url=str(item.get("foreign_landing_url") or audio_url),
+                    source="openverse",
+                    source_label=f"Openverse · {item.get('source') or '开放音频'}",
+                    can_download=_license_allows_download(license_value),
+                    preview_url=audio_url,
+                    artwork_url=str(item.get("thumbnail") or "") or None,
+                    duration_seconds=int(duration) // 1000 if duration else None,
+                    license=license_value or None,
+                )
+            )
+        return results
 
     def _search_archive(self, query: str, limit: int) -> list[MusicSearchResult]:
         term = re.sub(r'[()\[\]{}:\\"]+', " ", query).strip()
@@ -362,6 +419,7 @@ class OpenMusicService:
                     duration_seconds=(int(item["trackTimeMillis"]) // 1000)
                     if item.get("trackTimeMillis")
                     else None,
+                    preview_url=str(item.get("previewUrl") or "") or None,
                 )
             )
         return results
@@ -527,6 +585,59 @@ class OpenMusicService:
             )
         return results
 
+    def _openverse_files(self, identifier: str) -> list[MusicFile]:
+        if not self._openverse_identifier_pattern.fullmatch(identifier):
+            raise ValueError("无效的 Openverse 音乐标识")
+        with httpx.Client(timeout=25, headers={"User-Agent": _USER_AGENT}) as client:
+            response = client.get(f"https://api.openverse.org/v1/audio/{identifier}/")
+            response.raise_for_status()
+        item = response.json()
+        license_value = " ".join(
+            str(value)
+            for value in (item.get("license"), item.get("license_version"))
+            if value
+        )
+        if not _license_allows_download(license_value):
+            raise ValueError("该资源未声明可公开下载的许可")
+        title = str(item.get("title") or identifier)
+        files: list[MusicFile] = []
+
+        def add_file(value: object, *, primary: bool) -> None:
+            if not isinstance(value, dict):
+                return
+            url = str(value.get("url") or "")
+            if not url or (not primary and "/apiv2/" in url):
+                return
+            filetype = str(value.get("filetype") or "audio").lower()
+
+            def integer(key: str) -> int | None:
+                try:
+                    return int(value[key]) if value.get(key) is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            files.append(
+                MusicFile(
+                    name=f"{title}.{filetype}",
+                    format=filetype.upper(),
+                    size=integer("filesize"),
+                    bitrate=integer("bit_rate"),
+                    sample_rate=integer("sample_rate"),
+                    download_url=url,
+                )
+            )
+
+        add_file(item, primary=True)
+        for alternative in item.get("alt_files") or []:
+            add_file(alternative, primary=False)
+        files.sort(
+            key=lambda file: (
+                file.format.lower() not in {"flac", "wav", "wave"},
+                -(file.bitrate or 0),
+            )
+        )
+        return files
+
     def _archive_files(self, identifier: str) -> list[MusicFile]:
         if not self._archive_identifier_pattern.fullmatch(identifier):
             raise ValueError("无效的 Internet Archive 音乐标识")
@@ -554,11 +665,16 @@ class OpenMusicService:
                 size = int(item["size"]) if item.get("size") else None
             except (TypeError, ValueError):
                 size = None
+            try:
+                bitrate = int(item["bitrate"]) if item.get("bitrate") else None
+            except (TypeError, ValueError):
+                bitrate = None
             files.append(
                 MusicFile(
                     name=name,
                     format=file_format or suffix.upper(),
                     size=size,
+                    bitrate=bitrate,
                     download_url=f"https://archive.org/download/{quote(identifier)}/{quote(name)}",
                 )
             )

@@ -64,7 +64,6 @@ class _ToolsPageState extends State<ToolsPage> {
   bool _localConversionRunning = false;
   bool _localProbeRunning = false;
   List<MusicSearchResult> _musicResults = const [];
-  List<MusicFile> _musicFiles = const [];
   List<SniffedResource> _sniffedResources = const [];
   bool? _remoteToolsHealthy;
   LocalMediaCapabilities? _localCapabilities;
@@ -286,7 +285,6 @@ class _ToolsPageState extends State<ToolsPage> {
       _job = null;
       _saveProgress = 0;
       _musicResults = const [];
-      _musicFiles = const [];
       _sniffedResources = const [];
     }
 
@@ -295,6 +293,16 @@ class _ToolsPageState extends State<ToolsPage> {
     } else {
       apply();
     }
+  }
+
+  void _leaveTool() {
+    final current = _selectedTool;
+    if (current == null) return;
+    _toolInputs[current] = _inputController.text;
+    setState(() {
+      _selectedTool = null;
+      _draggingFile = false;
+    });
   }
 
   @override
@@ -450,126 +458,144 @@ class _ToolsPageState extends State<ToolsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(26, 28, 26, 42),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1120),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  '工具箱',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
+    return PopScope(
+      canPop: _selectedTool == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _leaveTool();
+      },
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(26, 28, 26, 42),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1120),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_selectedTool == null) ...[
+                    Text(
+                      '工具箱',
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '解析、转换和高级下载集中在一个工作台',
+                      style: TextStyle(color: context.palette.textMuted),
+                    ),
+                    const SizedBox(height: 24),
+                    if (_remoteToolsHealthy == false) ...[
+                      _ToolAvailabilityNotice(
+                        onRetry: _refreshCapabilities,
+                        localConversion: _localConversionAvailable,
+                        mobile: _isMobileLocal,
                       ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '解析、转换和高级下载集中在一个工作台',
-                  style: TextStyle(color: context.palette.textMuted),
-                ),
-                const SizedBox(height: 24),
-                if (_remoteToolsHealthy == false) ...[
-                  _ToolAvailabilityNotice(
-                    onRetry: _refreshCapabilities,
-                    localConversion: _localConversionAvailable,
-                    mobile: _isMobileLocal,
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final columns = constraints.maxWidth >= 900
-                        ? 4
-                        : constraints.maxWidth >= 620
-                            ? 3
-                            : constraints.maxWidth >= 420
-                                ? 2
-                                : 1;
-                    final width =
-                        (constraints.maxWidth - (columns - 1) * 12) / columns;
-                    return Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        for (final tool in _tools)
-                          SizedBox(
-                            width: width,
-                            child: _ToolCard(
-                              tool: tool,
-                              selected: _selectedTool == tool.id,
-                              enabled: _toolAvailable(tool.id),
-                              availability: _toolAvailabilityLabel(tool.id),
-                              onTap: () => _selectOrExplain(tool),
-                            ),
-                          ),
-                      ],
-                    );
-                  },
-                ),
-                if (_selectedTool != null) ...[
-                  const SizedBox(height: 20),
-                  _ToolWorkspace(
-                    tool: _tools.firstWhere((item) => item.id == _selectedTool),
-                    inputController: _inputController,
-                    selectedFile: _selectedFile,
-                    quality: _quality,
-                    audioFormat: _audioFormat,
-                    audioFormats: _availableAudioFormats,
-                    conversionFormat: _conversionFormat,
-                    conversionFormats: _availableConversionFormats(),
-                    conversionQuality: _conversionQuality,
-                    conversionQualityValues: _conversionQualityValues,
-                    busy: _busy,
-                    supportsFileDrop: _supportsDesktopDrop,
-                    draggingFile: _draggingFile,
-                    onPickFile: _pickFile,
-                    onDroppedFiles: _acceptDroppedFiles,
-                    onDragStateChanged: (value) =>
-                        setState(() => _draggingFile = value),
-                    onQualityChanged: (value) =>
-                        setState(() => _quality = value),
-                    onAudioFormatChanged: (value) =>
-                        setState(() => _audioFormat = value),
-                    onConversionFormatChanged: (value) =>
-                        setState(() => _conversionFormat = value),
-                    onConversionQualityChanged: (value) =>
-                        setState(() => _conversionQuality = value),
-                    onRun: _runSelectedTool,
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    _ToolError(message: _error!),
-                  ],
-                  if (_statusMessage != null) ...[
-                    const SizedBox(height: 12),
-                    _ToolStatus(message: _statusMessage!),
-                  ],
-                  if (_job != null) ...[
-                    const SizedBox(height: 12),
-                    _ToolProgress(
-                      job: _job!,
-                      saveProgress: _saveProgress,
-                      onCancel:
-                          _busy && !_localProbeRunning ? _cancelToolTask : null,
+                      const SizedBox(height: 16),
+                    ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final columns = constraints.maxWidth >= 900
+                            ? 4
+                            : constraints.maxWidth >= 620
+                                ? 3
+                                : constraints.maxWidth >= 420
+                                    ? 2
+                                    : 1;
+                        final width =
+                            (constraints.maxWidth - (columns - 1) * 12) /
+                                columns;
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            for (final tool in _tools)
+                              SizedBox(
+                                width: width,
+                                child: _ToolCard(
+                                  tool: tool,
+                                  selected: _selectedTool == tool.id,
+                                  enabled: _toolAvailable(tool.id),
+                                  availability: _toolAvailabilityLabel(tool.id),
+                                  onTap: () => _selectOrExplain(tool),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
                     ),
-                  ],
-                  if (_musicResults.isNotEmpty ||
-                      _musicFiles.isNotEmpty ||
-                      _sniffedResources.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _ToolResults(
-                      musicResults: _musicResults,
-                      musicFiles: _musicFiles,
-                      sniffedResources: _sniffedResources,
-                      onOpenMusic: _openMusicResult,
-                      onDownloadUrl: widget.onOpenParser,
+                  ] else ...[
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: _leaveTool,
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        label: const Text('返回工具箱'),
+                      ),
                     ),
+                    const SizedBox(height: 12),
+                    _ToolWorkspace(
+                      tool:
+                          _tools.firstWhere((item) => item.id == _selectedTool),
+                      inputController: _inputController,
+                      selectedFile: _selectedFile,
+                      quality: _quality,
+                      audioFormat: _audioFormat,
+                      audioFormats: _availableAudioFormats,
+                      conversionFormat: _conversionFormat,
+                      conversionFormats: _availableConversionFormats(),
+                      conversionQuality: _conversionQuality,
+                      conversionQualityValues: _conversionQualityValues,
+                      busy: _busy,
+                      supportsFileDrop: _supportsDesktopDrop,
+                      draggingFile: _draggingFile,
+                      onPickFile: _pickFile,
+                      onDroppedFiles: _acceptDroppedFiles,
+                      onDragStateChanged: (value) =>
+                          setState(() => _draggingFile = value),
+                      onQualityChanged: (value) =>
+                          setState(() => _quality = value),
+                      onAudioFormatChanged: (value) =>
+                          setState(() => _audioFormat = value),
+                      onConversionFormatChanged: (value) =>
+                          setState(() => _conversionFormat = value),
+                      onConversionQualityChanged: (value) =>
+                          setState(() => _conversionQuality = value),
+                      onRun: _runSelectedTool,
+                    ),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      _ToolError(message: _error!),
+                    ],
+                    if (_statusMessage != null) ...[
+                      const SizedBox(height: 12),
+                      _ToolStatus(message: _statusMessage!),
+                    ],
+                    if (_job != null) ...[
+                      const SizedBox(height: 12),
+                      _ToolProgress(
+                        job: _job!,
+                        saveProgress: _saveProgress,
+                        onCancel: _busy && !_localProbeRunning
+                            ? _cancelToolTask
+                            : null,
+                      ),
+                    ],
+                    if (_musicResults.isNotEmpty ||
+                        _sniffedResources.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _ToolResults(
+                        musicResults: _musicResults,
+                        sniffedResources: _sniffedResources,
+                        onPlayMusic: _playMusicResult,
+                        onDownloadMusic: _downloadMusicResult,
+                        onDownloadUrl: widget.onOpenParser,
+                      ),
+                    ],
                   ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -625,7 +651,6 @@ class _ToolsPageState extends State<ToolsPage> {
       _job = null;
       _saveProgress = 0;
       _musicResults = const [];
-      _musicFiles = const [];
       _sniffedResources = const [];
     });
     try {
@@ -962,7 +987,7 @@ class _ToolsPageState extends State<ToolsPage> {
     );
   }
 
-  Future<void> _loadMusicFiles(MusicSearchResult result) async {
+  Future<List<MusicFile>> _loadMusicFiles(MusicSearchResult result) async {
     setState(() {
       _busy = true;
       _cancelRequested = false;
@@ -976,12 +1001,12 @@ class _ToolsPageState extends State<ToolsPage> {
           : await _api.musicFiles(result.identifier);
       if (mounted) {
         setState(() {
-          _musicFiles = files;
           if (files.isEmpty) {
-            _statusMessage = '该来源没有提供经过授权的直接下载文件，请打开来源页面确认权限';
+            _statusMessage = '该来源没有提供经过授权的直接下载文件';
           }
         });
       }
+      return files;
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } on OpenMusicException catch (error) {
@@ -994,18 +1019,90 @@ class _ToolsPageState extends State<ToolsPage> {
         });
       }
     }
+    return const [];
   }
 
-  Future<void> _openMusicResult(MusicSearchResult result) async {
-    if (result.canDownload) {
-      await _loadMusicFiles(result);
+  Future<void> _playMusicResult(MusicSearchResult result) async {
+    final target = result.previewUrl;
+    if (target == null || target.isEmpty) {
+      if (mounted) setState(() => _error = '该来源没有提供可播放的试听音频');
       return;
     }
-    final target = result.previewUrl ?? result.itemUrl;
     final uri = Uri.tryParse(target);
     if (uri == null ||
         !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) setState(() => _error = '无法打开 ${result.sourceLabel} 来源页面');
+      if (mounted) setState(() => _error = '无法播放 ${result.sourceLabel} 音频');
+    }
+  }
+
+  Future<void> _downloadMusicResult(MusicSearchResult result) async {
+    final files = await _loadMusicFiles(result);
+    if (!mounted || files.isEmpty) return;
+    final choices = [...files]
+      ..sort((a, b) => _musicFileScore(b).compareTo(_musicFileScore(a)));
+    final selected = await showModalBottomSheet<MusicFile>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.76,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '选择下载音质',
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${result.title}${result.creator == null ? '' : ' · ${result.creator}'}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: sheetContext.palette.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: sheetContext.palette.border),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: choices.length,
+                  separatorBuilder: (context, index) =>
+                      Divider(height: 1, color: sheetContext.palette.border),
+                  itemBuilder: (context, index) {
+                    final file = choices[index];
+                    return ListTile(
+                      leading: const Icon(Icons.audio_file_rounded),
+                      title: Text(_musicFileQuality(file)),
+                      subtitle: Text(
+                        '${file.format}${file.size == null ? '' : ' · ${_humanBytes(file.size!)}'}\n${file.name}',
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.download_rounded),
+                      onTap: () => Navigator.pop(context, file),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected != null) {
+      widget.onOpenParser(selected.downloadUrl);
     }
   }
 
@@ -1355,8 +1452,8 @@ class _ToolWorkspace extends StatelessWidget {
     final label = tool.id == 'transfer'
         ? '选择 .torrent 种子文件'
         : tool.id == 'convert' && supportsFileDrop
-        ? '第 1 步 · 拖入文件，或点击选择'
-        : '选择本地文件';
+            ? '第 1 步 · 拖入文件，或点击选择'
+            : '选择本地文件';
     final content = AnimatedContainer(
       duration: const Duration(milliseconds: 160),
       decoration: BoxDecoration(
@@ -1591,7 +1688,7 @@ class _ToolWorkspace extends StatelessWidget {
             if (tool.id == 'music') ...[
               const SizedBox(height: 10),
               Text(
-                '聚合 Apple Music、MusicBrainz、Audius、Internet Archive、Wikimedia Commons 和可选 Jamendo；仅对来源明确授权的文件提供下载。',
+                '聚合 Openverse、Apple Music、Audius、Internet Archive、Wikimedia Commons 和可选 Jamendo；仅显示可播放或明确授权下载的结果。',
                 style: TextStyle(
                   color: context.palette.textMuted,
                   fontSize: 12,
@@ -1773,16 +1870,16 @@ class _ToolProgress extends StatelessWidget {
 class _ToolResults extends StatelessWidget {
   const _ToolResults({
     required this.musicResults,
-    required this.musicFiles,
     required this.sniffedResources,
-    required this.onOpenMusic,
+    required this.onPlayMusic,
+    required this.onDownloadMusic,
     required this.onDownloadUrl,
   });
 
   final List<MusicSearchResult> musicResults;
-  final List<MusicFile> musicFiles;
   final List<SniffedResource> sniffedResources;
-  final ValueChanged<MusicSearchResult> onOpenMusic;
+  final ValueChanged<MusicSearchResult> onPlayMusic;
+  final ValueChanged<MusicSearchResult> onDownloadMusic;
   final ValueChanged<String> onDownloadUrl;
 
   @override
@@ -1794,46 +1891,19 @@ class _ToolResults extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              musicFiles.isNotEmpty
-                  ? '可用音频文件 · ${musicFiles.length} 个'
-                  : musicResults.isNotEmpty
-                      ? '多源音乐搜索结果 · ${musicResults.length} 条'
-                      : '嗅探到的媒体资源',
+              musicResults.isNotEmpty
+                  ? '可播放与下载结果 · ${musicResults.length} 首'
+                  : '嗅探到的媒体资源',
               style: const TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
           Divider(height: 1, color: context.palette.border),
-          if (musicFiles.isNotEmpty)
-            for (final file in musicFiles.take(24))
-              _ResultRow(
-                icon: Icons.audio_file_outlined,
-                title: file.name,
-                subtitle:
-                    '${file.format}${file.size == null ? '' : ' · ${_humanBytes(file.size!)}'}',
-                actionLabel: '下载',
-                onTap: () => onDownloadUrl(file.downloadUrl),
-              )
-          else if (musicResults.isNotEmpty)
+          if (musicResults.isNotEmpty)
             for (final result in musicResults.take(60))
-              _ResultRow(
-                icon: Icons.album_outlined,
-                title: result.title,
-                subtitle: [
-                  result.sourceLabel,
-                  result.creator,
-                  result.year,
-                  result.album,
-                  result.license,
-                ]
-                    .whereType<String>()
-                    .where((value) => value.isNotEmpty)
-                    .join(' · '),
-                actionLabel: result.canDownload
-                    ? '查看文件'
-                    : result.previewUrl != null
-                        ? '试听'
-                        : '打开来源',
-                onTap: () => onOpenMusic(result),
+              _MusicResultRow(
+                result: result,
+                onPlay: () => onPlayMusic(result),
+                onDownload: () => onDownloadMusic(result),
               )
           else
             for (final resource in sniffedResources.take(30))
@@ -1851,6 +1921,99 @@ class _ToolResults extends StatelessWidget {
               ),
         ],
       ),
+    );
+  }
+}
+
+class _MusicResultRow extends StatelessWidget {
+  const _MusicResultRow({
+    required this.result,
+    required this.onPlay,
+    required this.onDownload,
+  });
+
+  final MusicSearchResult result;
+  final VoidCallback onPlay;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final previewAvailable = result.previewUrl?.isNotEmpty == true;
+    final subtitle = [
+      result.creator,
+      result.album,
+      result.year,
+      result.sourceLabel,
+    ].whereType<String>().where((value) => value.isNotEmpty).join(' · ');
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: result.artworkUrl?.isNotEmpty == true
+                    ? Image.network(
+                        result.artworkUrl!,
+                        width: 44,
+                        height: 44,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const SizedBox(
+                          width: 44,
+                          height: 44,
+                          child: Icon(Icons.album_outlined),
+                        ),
+                      )
+                    : const SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: Icon(Icons.album_outlined),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      result.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: context.palette.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (previewAvailable)
+                IconButton(
+                  tooltip: '播放',
+                  onPressed: onPlay,
+                  icon: const Icon(Icons.play_circle_outline_rounded),
+                ),
+              if (result.canDownload)
+                IconButton.filledTonal(
+                  tooltip: '选择音质并下载',
+                  onPressed: onDownload,
+                  icon: const Icon(Icons.download_rounded),
+                ),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: context.palette.border),
+      ],
     );
   }
 }
@@ -1920,6 +2083,35 @@ String _humanBytes(int bytes) {
     value /= 1024;
   }
   return '$bytes B';
+}
+
+int _musicFileScore(MusicFile file) {
+  final format = file.format.toLowerCase();
+  final lossless =
+      const {'flac', 'wav', 'wave', 'aiff', 'alac'}.contains(format);
+  final bitrate = file.bitrate ?? 0;
+  final normalizedBitrate = bitrate > 10000 ? bitrate ~/ 1000 : bitrate;
+  return (lossless ? 1000000 : 0) +
+      normalizedBitrate * 1000 +
+      (file.sampleRate ?? 0);
+}
+
+String _musicFileQuality(MusicFile file) {
+  final format = file.format.toUpperCase();
+  final lossless =
+      const {'FLAC', 'WAV', 'WAVE', 'AIFF', 'ALAC'}.contains(format);
+  final parts = <String>[if (lossless) '无损', format];
+  if (file.bitrate != null && file.bitrate! > 0) {
+    final kbps = file.bitrate! > 10000 ? file.bitrate! ~/ 1000 : file.bitrate!;
+    parts.add('$kbps kbps');
+  }
+  if (file.sampleRate != null && file.sampleRate! > 0) {
+    final rate = file.sampleRate! >= 1000
+        ? '${(file.sampleRate! / 1000).toStringAsFixed(file.sampleRate! % 1000 == 0 ? 0 : 1)} kHz'
+        : '${file.sampleRate} Hz';
+    parts.add(rate);
+  }
+  return parts.join(' · ');
 }
 
 String _conversionQualityLabel(String value) => switch (value) {

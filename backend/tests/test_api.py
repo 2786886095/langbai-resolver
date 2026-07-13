@@ -166,7 +166,7 @@ def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.1.3"
+    assert payload["version"] == "1.1.4"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
     assert "size_bytes" in payload["platforms"]["windows"]
     assert "signing_certificate_sha256" in payload["platforms"]["windows"]
