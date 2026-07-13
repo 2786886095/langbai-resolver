@@ -106,6 +106,21 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("android", manifest["platforms"])
         self.assertIn("ios", manifest["platforms"])
 
+    def test_unsigned_windows_release_is_explicitly_marked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            assets = Path(temp)
+            (assets / "langbai-resolver-Setup.exe").write_bytes(b"setup")
+            (assets / "langbai-resolver-Android.apk").write_bytes(b"apk")
+            manifest = manifest_tool.build_manifest(
+                version="1.2.3",
+                repository="owner/repo",
+                notes="notes",
+                assets=assets,
+            )
+        windows = manifest["platforms"]["windows"]
+        self.assertTrue(windows["unsigned"])
+        self.assertNotIn("signing_certificate_sha256", windows)
+
     def test_android_abi_variants_are_exposed_with_universal_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             assets = Path(temp)
@@ -132,11 +147,13 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(platforms["android-arm64"]["size_bytes"], 5)
         self.assertRegex(platforms["android-arm64"]["sha256"], r"^[0-9a-f]{64}$")
 
-    def test_incomplete_windows_release_is_rejected(self) -> None:
+    def test_windows_signer_without_setup_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             assets = Path(temp)
             (assets / "langbai-resolver-Android.apk").write_bytes(b"apk")
-            (assets / "langbai-resolver-Setup.exe").write_bytes(b"setup")
+            (assets / "windows-signing-cert-sha256.txt").write_text(
+                "a" * 64, encoding="utf-8"
+            )
             with self.assertRaises(FileNotFoundError):
                 manifest_tool.build_manifest(
                     version="1.2.3",

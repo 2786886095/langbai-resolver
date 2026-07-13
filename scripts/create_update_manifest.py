@@ -73,9 +73,9 @@ def build_manifest(
     signer_file = _asset(
         assets, "windows-signing-cert-sha256.txt", required=False
     )
-    if (windows is None) != (signer_file is None):
+    if windows is None and signer_file is not None:
         raise FileNotFoundError(
-            "Windows Setup and signing certificate fingerprint must be provided together"
+            "Windows signing certificate fingerprint requires a Windows Setup"
         )
     assert android is not None
 
@@ -86,12 +86,15 @@ def build_manifest(
     for platform, variant in android_variants.items():
         if variant is not None:
             platforms[platform] = _platform_release(base, variant)
-    if windows is not None and signer_file is not None:
-        signer = signer_file.read_text(encoding="utf-8").strip().lower()
-        if not _SHA256.fullmatch(signer):
-            raise ValueError("Windows signing certificate SHA-256 is invalid")
+    if windows is not None:
         windows_release = _platform_release(base, windows)
-        windows_release["signing_certificate_sha256"] = signer
+        if signer_file is not None:
+            signer = signer_file.read_text(encoding="utf-8").strip().lower()
+            if not _SHA256.fullmatch(signer):
+                raise ValueError("Windows signing certificate SHA-256 is invalid")
+            windows_release["signing_certificate_sha256"] = signer
+        else:
+            windows_release["unsigned"] = True
         platforms["windows"] = windows_release
     if ios is not None:
         platforms["ios"] = _platform_release(base, ios)

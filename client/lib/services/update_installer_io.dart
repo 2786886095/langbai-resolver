@@ -61,11 +61,13 @@ Future<String> installUpdate(
   if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(expectedHash)) {
     throw const FormatException('Windows 更新缺少有效的 SHA-256，已拒绝执行');
   }
-  if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(trustedSigner)) {
-    throw const FormatException('当前安装未配置官方更新签名，请从 GitHub Release 手动更新');
-  }
-  if (manifestSigner != trustedSigner) {
-    throw const FormatException('更新签名证书与当前应用信任的证书不一致');
+  if (!release.unsigned) {
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(trustedSigner)) {
+      throw const FormatException('当前安装未配置官方更新签名，请从 GitHub Release 手动更新');
+    }
+    if (manifestSigner != trustedSigner) {
+      throw const FormatException('更新签名证书与当前应用信任的证书不一致');
+    }
   }
 
   final client = http.Client();
@@ -111,7 +113,9 @@ Future<String> installUpdate(
     if (digest.toString().toLowerCase() != expectedHash) {
       throw const FormatException('安装包 SHA-256 校验失败');
     }
-    await _verifyWindowsSignature(partial, trustedSigner);
+    if (!release.unsigned) {
+      await _verifyWindowsSignature(partial, trustedSigner);
+    }
     if (await installer.exists()) await installer.delete();
     await partial.rename(installer.path);
     onProgress?.call(1);
@@ -120,15 +124,17 @@ Future<String> installUpdate(
       '${Platform.pathSeparator}langbai-resolver${Platform.pathSeparator}logs',
     );
     await logDirectory.create(recursive: true);
-    final logPath =
-        '${logDirectory.path}${Platform.pathSeparator}'
+    final logPath = '${logDirectory.path}${Platform.pathSeparator}'
         'update-$safeVersion-${DateTime.now().millisecondsSinceEpoch}.log';
-    final setupProcess = await Process.start(installer.path, [
-      '/SP-',
-      '/CLOSEAPPLICATIONS',
-      '/RESTARTAPPLICATIONS',
-      '/LOG=$logPath',
-    ], mode: ProcessStartMode.detached);
+    final setupProcess = await Process.start(
+        installer.path,
+        [
+          '/SP-',
+          '/CLOSEAPPLICATIONS',
+          '/RESTARTAPPLICATIONS',
+          '/LOG=$logPath',
+        ],
+        mode: ProcessStartMode.detached);
     await _scheduleInstallerCleanup(installer, setupProcess.pid);
     await Future<void>.delayed(const Duration(milliseconds: 500));
     exit(0);
@@ -149,9 +155,8 @@ Future<http.StreamedResponse> _sendFollowingSecureRedirects(
     final request = http.Request('GET', current)
       ..followRedirects = false
       ..headers['User-Agent'] = 'langbai-resolver-updater';
-    final response = await client
-        .send(request)
-        .timeout(const Duration(seconds: 30));
+    final response =
+        await client.send(request).timeout(const Duration(seconds: 30));
     if (!response.isRedirect) return response;
     final location = response.headers['location'];
     if (location == null || redirects == 5) {

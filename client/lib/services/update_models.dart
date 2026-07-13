@@ -4,6 +4,7 @@ class UpdatePlatformRelease {
     this.sha256 = '',
     this.sizeBytes,
     this.signingCertificateSha256 = '',
+    this.unsigned = false,
   });
 
   factory UpdatePlatformRelease.fromJson(Map<String, dynamic> json) {
@@ -17,6 +18,7 @@ class UpdatePlatformRelease {
       },
       signingCertificateSha256:
           json['signing_certificate_sha256']?.toString().trim() ?? '',
+      unsigned: json['unsigned'] == true,
     );
   }
 
@@ -24,6 +26,7 @@ class UpdatePlatformRelease {
   final String sha256;
   final int? sizeBytes;
   final String signingCertificateSha256;
+  final bool unsigned;
 }
 
 class UpdateManifest {
