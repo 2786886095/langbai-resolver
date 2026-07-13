@@ -289,7 +289,7 @@ jobs:
           python scripts/create_update_manifest.py
           --version "$RELEASE_VERSION"
           --repository "$GITHUB_REPOSITORY"
-          --notes "手机端适配、图片预览、本地格式转换、下载速度、无平台水印源优先与 Android 应用内更新改进。"
+          --notes "解析缓存与预热、自适应图片预览、全屏缩放、全面媒体格式转换与安装包体积优化。"
           --assets release-assets
           --output release-assets/update-manifest.json
       - name: Publish GitHub Release

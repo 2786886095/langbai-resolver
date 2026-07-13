@@ -111,8 +111,51 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('00:15'), findsNothing);
+
+      final mainPreview = find.byKey(const ValueKey('media-preview-image:1'));
+      final previewImage = tester.widget<Image>(
+        find.descendant(of: mainPreview, matching: find.byType(Image)),
+      );
+      expect(previewImage.fit, BoxFit.contain);
+      expect(previewImage.image, isA<ResizeImage>());
+      expect((previewImage.image as ResizeImage).width, 1280);
+      expect(find.text('\u91cd\u65b0\u52a0\u8f7d'), findsWidgets);
+
+      await tester.ensureVisible(mainPreview);
+      await tester.tap(mainPreview);
+      await tester.pumpAndSettle();
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      expect(find.byTooltip('\u5173\u95ed\u9884\u89c8'), findsOneWidget);
     },
   );
+
+  testWidgets('repeated link parsing reuses the short page cache', (
+    tester,
+  ) async {
+    var resolveCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_channel, (call) async {
+          if (call.method == 'resolve') {
+            resolveCalls++;
+            return _imagePayload();
+          }
+          if (call.method == 'getCapabilities') {
+            return <String, Object?>{
+              'platform': 'android',
+              'local_resolver': true,
+              'tools': <String, bool>{},
+            };
+          }
+          return null;
+        });
+
+    await tester.pumpWidget(app());
+    await resolve(tester);
+    await tester.ensureVisible(find.text('\u5f00\u59cb\u89e3\u6790'));
+    await tester.tap(find.text('\u5f00\u59cb\u89e3\u6790'));
+    await tester.pumpAndSettle();
+    expect(resolveCalls, 1);
+  });
 
   testWidgets('image grid fits portrait, landscape, safe areas and keyboard', (
     tester,

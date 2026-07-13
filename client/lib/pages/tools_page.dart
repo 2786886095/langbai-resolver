@@ -345,7 +345,11 @@ class _ToolsPageState extends State<ToolsPage> {
       final extension = _fileExtension(file.name);
       if (_imageExtensions.contains(extension)) {
         return outputs
-            .where(_imageMediaFormats.contains)
+            .where(
+              (format) =>
+                  _imageMediaFormats.contains(format) ||
+                  (extension == 'gif' && _videoMediaFormats.contains(format)),
+            )
             .toList(growable: false);
       }
       if (_audioExtensions.contains(extension)) {
@@ -358,7 +362,8 @@ class _ToolsPageState extends State<ToolsPage> {
             .where(
               (format) =>
                   _videoMediaFormats.contains(format) ||
-                  _audioMediaFormats.contains(format),
+                  _audioMediaFormats.contains(format) ||
+                  _imageMediaFormats.contains(format),
             )
             .toList(growable: false);
       }
@@ -367,17 +372,68 @@ class _ToolsPageState extends State<ToolsPage> {
     if (_remoteToolsHealthy != true) return const <String>[];
     final file = selected ?? _selectedFile;
     if (file == null) {
-      return const ['mp4', 'mp3', 'm4a', 'flac', 'wav', 'jpg', 'png', 'webp'];
+      return const [
+        'mp4',
+        'mkv',
+        'webm',
+        'avi',
+        'mov',
+        'mp3',
+        'm4a',
+        'aac',
+        'flac',
+        'wav',
+        'ogg',
+        'opus',
+        'jpg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'tiff',
+      ];
     }
     final extension = _fileExtension(file.name);
     if (_imageExtensions.contains(extension)) {
-      return const ['jpg', 'jpeg', 'png', 'webp'];
+      return const ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff'];
     }
     if (_audioExtensions.contains(extension)) {
-      return const ['mp3', 'm4a', 'flac', 'wav'];
+      return const [
+        'mp3',
+        'm4a',
+        'aac',
+        'flac',
+        'wav',
+        'ogg',
+        'opus',
+        'ac3',
+        'aiff',
+      ];
     }
     if (_videoExtensions.contains(extension)) {
-      return const ['mp4', 'mp3', 'm4a', 'flac', 'wav'];
+      return const [
+        'mp4',
+        'mkv',
+        'webm',
+        'avi',
+        'mov',
+        'ts',
+        'mp3',
+        'm4a',
+        'aac',
+        'flac',
+        'wav',
+        'ogg',
+        'opus',
+        'ac3',
+        'aiff',
+        'jpg',
+        'png',
+        'webp',
+        'gif',
+        'bmp',
+        'tiff',
+      ];
     }
     return const <String>[];
   }
@@ -397,7 +453,17 @@ class _ToolsPageState extends State<ToolsPage> {
           .where(_audioMediaFormats.contains)
           .toList(growable: false);
     }
-    return const ['mp3', 'm4a', 'flac', 'wav'];
+    return const [
+      'mp3',
+      'm4a',
+      'aac',
+      'flac',
+      'wav',
+      'ogg',
+      'opus',
+      'ac3',
+      'aiff',
+    ];
   }
 
   @override
@@ -883,13 +949,13 @@ class _ToolsPageState extends State<ToolsPage> {
 
   String _remoteConversionOperation(XFile file, String outputFormat) {
     final input = _fileExtension(file.name);
-    if (_audioOutputFormats.contains(outputFormat)) return 'extract_audio';
-    if (_imageExtensions.contains(input) &&
-        _imageOutputFormats.contains(outputFormat)) {
-      return 'compress_image';
-    }
-    if (_videoExtensions.contains(input) && outputFormat == 'mp4') {
-      return 'compress_video';
+    if ((_imageExtensions.contains(input) ||
+            _audioExtensions.contains(input) ||
+            _videoExtensions.contains(input)) &&
+        (_imageMediaFormats.contains(outputFormat) ||
+            _audioMediaFormats.contains(outputFormat) ||
+            _videoMediaFormats.contains(outputFormat))) {
+      return 'convert_media';
     }
     throw ApiException(
       '高级工具服务不支持 ${input.toUpperCase()} → ${outputFormat.toUpperCase()}',
@@ -1478,7 +1544,9 @@ class _ToolWorkspace extends StatelessWidget {
                     for (final format in conversionFormats)
                       DropdownMenuItem(
                         value: format,
-                        child: Text(format.toUpperCase()),
+                        child: Text(
+                          '${_conversionFormatCategory(format)} · ${format.toUpperCase()}',
+                        ),
                       ),
                   ],
                   onChanged: busy
@@ -1486,7 +1554,15 @@ class _ToolWorkspace extends StatelessWidget {
                       : (value) {
                           if (value != null) onConversionFormatChanged(value);
                         },
+              ),
+              const SizedBox(height: 7),
+              Text(
+                '已按当前文件自动筛选 ${conversionFormats.length} 种兼容输出格式',
+                style: TextStyle(
+                  color: context.palette.textMuted,
+                  fontSize: 12,
                 ),
+              ),
               const SizedBox(height: 10),
               DropdownButtonFormField<String>(
                 // ignore: deprecated_member_use
@@ -1850,6 +1926,13 @@ String _conversionQualityLabel(String value) => switch (value) {
   _ => value,
 };
 
+String _conversionFormatCategory(String value) {
+  if (_videoMediaFormats.contains(value)) return '视频';
+  if (_audioMediaFormats.contains(value)) return '音频';
+  if (_imageMediaFormats.contains(value)) return '图片';
+  return '文件';
+}
+
 String _audioFormatLabel(String value) => switch (value) {
   'mp3' => 'MP3 · 320 kbps',
   'm4a' => 'M4A · AAC',
@@ -1888,7 +1971,10 @@ const _imageExtensions = {
   'gif',
   'bmp',
   'tiff',
+  'tif',
+  'tga',
   'heic',
+  'heif',
 };
 const _videoExtensions = {
   'mp4',
@@ -1901,6 +1987,13 @@ const _videoExtensions = {
   '3gp',
   'ts',
   'mts',
+  'm2ts',
+  'wmv',
+  'mpeg',
+  'mpg',
+  'vob',
+  'ogv',
+  'asf',
 };
 const _audioExtensions = {
   'mp3',
@@ -1912,17 +2005,36 @@ const _audioExtensions = {
   'opus',
   'wma',
   'aiff',
+  'aif',
+  'amr',
+  'ac3',
+  'eac3',
+  'dts',
+  'ape',
+  'alac',
 };
-const _audioOutputFormats = {'mp3', 'm4a', 'flac', 'wav'};
-const _imageOutputFormats = {'jpg', 'jpeg', 'png', 'webp'};
-const _audioMediaFormats = {'mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus'};
+const _audioMediaFormats = {
+  'mp3',
+  'm4a',
+  'aac',
+  'flac',
+  'wav',
+  'ogg',
+  'opus',
+  'ac3',
+  'aiff',
+  'aif',
+};
 const _imageMediaFormats = {
   'jpg',
   'jpeg',
   'png',
   'webp',
   'bmp',
+  'gif',
+  'tiff',
+  'tif',
   'heic',
   'heif',
 };
-const _videoMediaFormats = {'mp4', 'm4v', 'mov', 'mkv', 'webm'};
+const _videoMediaFormats = {'mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'ts'};

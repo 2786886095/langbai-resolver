@@ -51,9 +51,10 @@ async def lifespan(_app: FastAPI):
     if executor is not None:
         executor.shutdown(wait=False, cancel_futures=True)
 
+
 app = FastAPI(
     title="langbai解析 API",
-    version="1.1.0",
+    version="1.1.1",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
     lifespan=lifespan,
 )
@@ -73,9 +74,7 @@ async def require_instance_token(request: Request, call_next):
     is_api = request.url.path.startswith("/api/v1/")
     if is_api and expected and request.method != "OPTIONS":
         supplied = request.headers.get("X-Langbai-Instance-Token", "")
-        if not hmac.compare_digest(
-            supplied.encode("utf-8"), expected.encode("utf-8")
-        ):
+        if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
             return JSONResponse(
                 status_code=401,
                 content={

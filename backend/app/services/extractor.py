@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -239,8 +240,7 @@ def _select_douyin_play_urls(play_addr: object) -> tuple[str | None, tuple[str, 
         if re.fullmatch(r"\d{1,3}", line):
             clean_query["line"] = line
         clean_url = (
-            f"https://aweme.snssdk.com{_DOUYIN_PLAY_PATH}?"
-            f"{urlencode(clean_query)}"
+            f"https://aweme.snssdk.com{_DOUYIN_PLAY_PATH}?{urlencode(clean_query)}"
         )
         return clean_url, tuple(watermark_urls)
     return watermark_urls[0], tuple(watermark_urls[1:])
@@ -316,6 +316,7 @@ class ResolverService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._cache: dict[str, ResolvedEntry] = {}
+        self._source_cache: dict[str, str] = {}
         self._cache_lock = RLock()
         self._executor = ThreadPoolExecutor(
             max_workers=max(2, settings.max_concurrent_jobs * 2),
@@ -340,9 +341,13 @@ class ResolverService:
         )
         cookie_header = _clean_bilibili_cookie(bilibili_cookie, url)
         self._prune()
+        source_cache_key = self._source_cache_key(url, cookie_header)
+        cached_entry = self._get_by_source(source_cache_key)
+        if cached_entry:
+            return cached_entry.media
         direct_entry = self._resolve_direct_url(url)
         if direct_entry:
-            self._store(direct_entry)
+            self._store(direct_entry, source_cache_key)
             return direct_entry.media
         fallback_warnings: list[str] = []
         if self._is_kuaishou_url(url):
@@ -357,7 +362,7 @@ class ResolverService:
             ):
                 fallback_warnings.append("快手专用解析器暂不可用，已尝试通用解析。")
             else:
-                self._store(entry)
+                self._store(entry, source_cache_key)
                 return entry.media
         if self._is_douyin_url(url):
             try:
@@ -365,12 +370,10 @@ class ResolverService:
             except (httpx.HTTPError, KeyError, TypeError, ValueError):
                 fallback_warnings.append("抖音专用解析器暂不可用，已尝试通用解析。")
             else:
-                self._store(entry)
+                self._store(entry, source_cache_key)
                 return entry.media
         try:
-            entry = await self._blocking(
-                self._resolve_with_ytdlp, url, cookie_header
-            )
+            entry = await self._blocking(self._resolve_with_ytdlp, url, cookie_header)
         except yt_dlp.utils.DownloadError as error:
             try:
                 entry = await self._blocking(self._resolve_open_graph, url, str(error))
@@ -381,8 +384,17 @@ class ResolverService:
                     ) from error
                 raise
         entry.media.warnings[:0] = fallback_warnings
-        self._store(entry)
+        self._store(entry, source_cache_key)
         return entry.media
+
+    @staticmethod
+    def _source_cache_key(url: str, cookie_header: str | None) -> str:
+        cookie_scope = (
+            hashlib.sha256(cookie_header.encode("utf-8")).hexdigest()
+            if cookie_header
+            else "anonymous"
+        )
+        return f"{url}\n{cookie_scope}"
 
     @staticmethod
     def _is_douyin_url(url: str) -> bool:
@@ -640,9 +652,7 @@ class ResolverService:
         media_id = uuid.uuid4().hex
         specs: dict[str, DownloadSpec] = {}
         video = item.get("video") if isinstance(item.get("video"), dict) else {}
-        play_url, fallback_play_urls = _select_douyin_play_urls(
-            video.get("play_addr")
-        )
+        play_url, fallback_play_urls = _select_douyin_play_urls(video.get("play_addr"))
         width = _as_int(video.get("width"))
         height = _as_int(video.get("height"))
         if play_url:
@@ -766,12 +776,29 @@ class ResolverService:
         with self._cache_lock:
             return self._cache.get(media_id)
 
-    def _store(self, entry: ResolvedEntry) -> None:
+    def _get_by_source(self, source_cache_key: str) -> ResolvedEntry | None:
+        with self._cache_lock:
+            media_id = self._source_cache.get(source_cache_key)
+            if not media_id:
+                return None
+            entry = self._cache.get(media_id)
+            if entry is None:
+                self._source_cache.pop(source_cache_key, None)
+            return entry
+
+    def _store(self, entry: ResolvedEntry, source_cache_key: str | None = None) -> None:
         with self._cache_lock:
             if len(self._cache) >= 128:
                 oldest = min(self._cache, key=lambda key: self._cache[key].created_at)
                 self._cache.pop(oldest, None)
+                self._source_cache = {
+                    key: value
+                    for key, value in self._source_cache.items()
+                    if value != oldest
+                }
             self._cache[entry.media.media_id] = entry
+            if source_cache_key:
+                self._source_cache[source_cache_key] = entry.media.media_id
 
     def _base_ytdlp_options(self, cookie_file: str | None = None) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -780,8 +807,8 @@ class ResolverService:
             "noplaylist": True,
             "skip_download": True,
             "socket_timeout": 20,
-            "retries": 2,
-            "extractor_retries": 2,
+            "retries": 1,
+            "extractor_retries": 1,
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1000,12 +1027,14 @@ class ResolverService:
                 ),
             )
 
-        has_audio = bool(audio_formats) or any(
-            format_has_audio(item) for item in formats
-        ) or (
-            bool(direct_url)
-            and direct_extension not in image_extensions
-            and str(info.get("acodec") or "").lower() != "none"
+        has_audio = (
+            bool(audio_formats)
+            or any(format_has_audio(item) for item in formats)
+            or (
+                bool(direct_url)
+                and direct_extension not in image_extensions
+                and str(info.get("acodec") or "").lower() != "none"
+            )
         )
         if has_audio:
             best_audio_format = max(
@@ -1277,3 +1306,10 @@ class ResolverService:
             ]
             for key in expired:
                 self._cache.pop(key, None)
+            if expired:
+                expired_ids = set(expired)
+                self._source_cache = {
+                    key: value
+                    for key, value in self._source_cache.items()
+                    if value not in expired_ids
+                }

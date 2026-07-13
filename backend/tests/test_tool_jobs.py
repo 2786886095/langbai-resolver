@@ -57,6 +57,54 @@ def test_image_compression_job(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("output_format", "expected_codec"),
+    [
+        ("mp4", "libx264"),
+        ("mkv", "libx264"),
+        ("webm", "libvpx-vp9"),
+        ("avi", "mpeg4"),
+        ("mp3", "libmp3lame"),
+        ("flac", "flac"),
+        ("opus", "libopus"),
+        ("webp", "libwebp"),
+        ("tiff", "tiff"),
+    ],
+)
+def test_comprehensive_media_conversion_matrix(
+    output_format: str,
+    expected_codec: str,
+) -> None:
+    arguments = JobManager._media_conversion_arguments(
+        output_format,
+        crf=24,
+        audio_bitrate="256k",
+        quality=88,
+    )
+    assert expected_codec in arguments
+
+
+def test_mkv_conversion_does_not_use_mov_muxer_flags() -> None:
+    arguments = JobManager._media_conversion_arguments(
+        "mkv",
+        crf=24,
+        audio_bitrate="256k",
+        quality=88,
+    )
+    assert "-movflags" not in arguments
+    assert "+faststart" not in arguments
+
+
+def test_media_conversion_matrix_rejects_unknown_output() -> None:
+    with pytest.raises(ValueError, match="DOCX"):
+        JobManager._media_conversion_arguments(
+            "docx",
+            crf=24,
+            audio_bitrate="256k",
+            quality=88,
+        )
+
+
 def test_multi_source_transfer_normalizes_mirrors(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.jobs.validate_public_url", lambda value, _allow=False: value
@@ -334,9 +382,7 @@ def test_direct_download_falls_back_to_sequential_get_when_ranges_are_broken(
     asyncio.run(scenario())
 
 
-def test_direct_download_uses_explicit_compatibility_url(
-    tmp_path, monkeypatch
-) -> None:
+def test_direct_download_uses_explicit_compatibility_url(tmp_path, monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
 
     @asynccontextmanager
@@ -447,9 +493,7 @@ def test_direct_progress_calculates_speed_and_eta(tmp_path, monkeypatch) -> None
         updated_at=now,
     )
     samples = iter((10.0, 12.0, 13.0, 15.0))
-    monkeypatch.setattr(
-        "app.services.jobs.time.monotonic", lambda: next(samples)
-    )
+    monkeypatch.setattr("app.services.jobs.time.monotonic", lambda: next(samples))
 
     jobs._update_progress("speed-job", 0, 10_240, None, None)
     jobs._update_progress("speed-job", 2_048, 10_240, None, None)
@@ -525,9 +569,7 @@ def test_ytdlp_worker_forces_native_hls_and_rejects_live_streams(
     assert isinstance(options, dict)
     assert options["hls_prefer_native"] is True
     assert options["external_downloader"]["m3u8"] == "native"
-    assert "外部 FFmpeg" in options["match_filter"](
-        {"is_live": True}, incomplete=False
-    )
+    assert "外部 FFmpeg" in options["match_filter"]({"is_live": True}, incomplete=False)
     assert "外部下载器" in options["match_filter"](
         {"protocol": "rtmp"}, incomplete=False
     )

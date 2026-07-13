@@ -224,12 +224,16 @@ internal class NativeFormatConverter(private val context: Context) {
 
     private fun validatePair(inputExtension: String, output: String, probe: Probe) {
         when (output) {
-            in VIDEO_OUTPUTS -> require(probe.hasVideo && inputExtension !in IMAGE_INPUTS) {
+            in VIDEO_OUTPUTS -> require(
+                probe.hasVideo && (inputExtension !in IMAGE_INPUTS || inputExtension == "gif"),
+            ) {
                 "该源文件不能转换为视频"
             }
             "gif" -> require(probe.hasVideo) { "该源文件不能转换为 GIF" }
             in AUDIO_OUTPUTS -> require(probe.hasAudio) { "源文件不包含可转换的音轨" }
-            in IMAGE_OUTPUTS -> require(inputExtension in IMAGE_INPUTS) { "仅支持图片之间转换格式" }
+            in IMAGE_OUTPUTS -> require(probe.hasVideo) {
+                "源文件不包含可转换的图像或视频画面"
+            }
         }
     }
 
@@ -237,6 +241,8 @@ internal class NativeFormatConverter(private val context: Context) {
         val videoQuality = mapOf("low" to "12", "medium" to "7", "high" to "3", "original" to "2")
             .getValue(quality)
         val audioBitrate = mapOf("low" to "96k", "medium" to "160k", "high" to "256k", "original" to "320k")
+            .getValue(quality)
+        val modernVideoCrf = mapOf("low" to "38", "medium" to "31", "high" to "25", "original" to "19")
             .getValue(quality)
         return when (format) {
             "mp4", "mov" -> listOf(
@@ -253,6 +259,19 @@ internal class NativeFormatConverter(private val context: Context) {
                 "-map", "0:v:0", "-map", "0:a?", "-c:v", "mpeg4", "-q:v", videoQuality,
                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", audioBitrate,
             )
+            "webm" -> listOf(
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "libvpx-vp9",
+                "-crf", modernVideoCrf, "-b:v", "0", "-row-mt", "1",
+                "-c:a", "libopus", "-b:a", audioBitrate,
+            )
+            "avi" -> listOf(
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "mpeg4", "-q:v", videoQuality,
+                "-c:a", "libmp3lame", "-b:a", audioBitrate,
+            )
+            "ts" -> listOf(
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "mpeg2video", "-q:v", videoQuality,
+                "-c:a", "aac", "-b:a", audioBitrate, "-f", "mpegts",
+            )
             "gif" -> listOf("-map", "0:v:0", "-vf", "fps=${if (quality == "low") 10 else 15}", "-loop", "0")
             "mp3" -> listOf("-vn", "-c:a", "libmp3lame", "-b:a", audioBitrate)
             "m4a", "aac" -> listOf("-vn", "-c:a", "aac", "-b:a", audioBitrate)
@@ -260,10 +279,13 @@ internal class NativeFormatConverter(private val context: Context) {
             "flac" -> listOf("-vn", "-c:a", "flac", "-compression_level", if (quality == "low") "3" else "8")
             "ogg" -> listOf("-vn", "-c:a", "libvorbis", "-q:a", if (quality == "low") "3" else "7")
             "opus" -> listOf("-vn", "-c:a", "libopus", "-b:a", audioBitrate)
+            "ac3" -> listOf("-vn", "-c:a", "ac3", "-b:a", if (quality == "low") "192k" else "384k")
+            "aiff", "aif" -> listOf("-vn", "-c:a", "pcm_s16be")
             "jpg", "jpeg" -> listOf("-frames:v", "1", "-q:v", if (quality == "low") "8" else "2")
             "png" -> listOf("-frames:v", "1", "-compression_level", if (quality == "low") "9" else "4")
             "webp" -> listOf("-frames:v", "1", "-c:v", "libwebp", "-quality", if (quality == "low") "65" else "92")
             "bmp" -> listOf("-frames:v", "1")
+            "tiff", "tif" -> listOf("-frames:v", "1", "-c:v", "tiff")
             else -> error("Android 暂不支持该输出格式")
         }
     }
@@ -312,15 +334,20 @@ internal class NativeFormatConverter(private val context: Context) {
         "mov" -> "video/quicktime"
         "mkv" -> "video/x-matroska"
         "webm" -> "video/webm"
+        "avi" -> "video/x-msvideo"
+        "ts" -> "video/mp2t"
         "mp3" -> "audio/mpeg"
         "m4a", "aac" -> "audio/mp4"
         "wav" -> "audio/wav"
         "flac" -> "audio/flac"
         "ogg", "opus" -> "audio/ogg"
+        "ac3" -> "audio/ac3"
+        "aiff", "aif" -> "audio/aiff"
         "jpg", "jpeg" -> "image/jpeg"
         "png" -> "image/png"
         "webp" -> "image/webp"
         "heic", "heif" -> "image/heic"
+        "tiff", "tif" -> "image/tiff"
         else -> "application/octet-stream"
     }
 
@@ -331,12 +358,25 @@ internal class NativeFormatConverter(private val context: Context) {
     )
 
     companion object {
-        private val VIDEO_INPUTS = setOf("mp4", "m4v", "mov", "mkv", "webm", "avi", "flv", "ts", "mts", "m2ts", "3gp")
-        private val AUDIO_INPUTS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "amr")
-        private val IMAGE_INPUTS = setOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "avif")
-        private val VIDEO_OUTPUTS = setOf("mp4", "m4v", "mov", "mkv")
-        private val AUDIO_OUTPUTS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus")
-        private val IMAGE_OUTPUTS = setOf("jpg", "jpeg", "png", "webp", "bmp")
+        private val VIDEO_INPUTS = setOf(
+            "mp4", "m4v", "mov", "mkv", "webm", "avi", "flv", "ts", "mts", "m2ts",
+            "3gp", "wmv", "mpeg", "mpg", "vob", "ogv", "asf",
+        )
+        private val AUDIO_INPUTS = setOf(
+            "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "amr", "aiff",
+            "aif", "ac3", "eac3", "dts", "ape", "alac",
+        )
+        private val IMAGE_INPUTS = setOf(
+            "jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "avif", "tiff",
+            "tif", "tga",
+        )
+        private val VIDEO_OUTPUTS = setOf("mp4", "m4v", "mov", "mkv", "webm", "avi", "ts")
+        private val AUDIO_OUTPUTS = setOf(
+            "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "ac3", "aiff", "aif",
+        )
+        private val IMAGE_OUTPUTS = setOf(
+            "jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif",
+        )
         private val ALL_OUTPUTS = VIDEO_OUTPUTS + AUDIO_OUTPUTS + IMAGE_OUTPUTS + "gif"
         private val QUALITY_VALUES = setOf("low", "medium", "high", "original")
     }

@@ -61,7 +61,15 @@ void main() {
               'conversion_cancellation': true,
               'conversion': {
                 'input_extensions': ['mp4', 'mkv'],
-                'output_formats': ['mp4', 'webm', 'm4a', 'jpg'],
+                'output_formats': [
+                  'mp4',
+                  'webm',
+                  'avi',
+                  'm4a',
+                  'ac3',
+                  'jpg',
+                  'tiff',
+                ],
                 'quality_values': ['medium', 'high'],
               },
               'tools': <String, bool>{},
@@ -80,11 +88,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
 
     expect(find.text('选择本地文件'), findsOneWidget);
-    expect(find.text('MP4'), findsOneWidget);
-    await tester.ensureVisible(find.text('MP4'));
-    await tester.tap(find.text('MP4'));
+    expect(find.textContaining('MP4'), findsOneWidget);
+    await tester.ensureVisible(find.textContaining('MP4'));
+    await tester.tap(find.textContaining('MP4'));
     await tester.pumpAndSettle();
-    expect(find.text('WEBM'), findsOneWidget);
+    expect(find.textContaining('WEBM'), findsOneWidget);
+    expect(find.textContaining('AVI'), findsOneWidget);
+    expect(find.textContaining('AC3'), findsOneWidget);
     expect(find.text('本机可用'), findsWidgets);
     expect(find.text('手机端未内置 P2P'), findsOneWidget);
     expect(tester.takeException(), isNull);

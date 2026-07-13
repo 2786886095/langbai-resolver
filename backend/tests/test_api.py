@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -120,6 +121,25 @@ def test_extracts_url_from_complete_kuaishou_share_text() -> None:
     assert extract_http_url(KUAISHOU_SHARE_TEXT) == ("https://v.kuaishou.com/Jn5E7UbF")
 
 
+def test_resolver_reuses_fresh_source_result(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.extractor.validate_public_url",
+        lambda value, _allow_fake_ip_dns: value,
+    )
+    resolver = ResolverService(settings)
+
+    async def scenario() -> None:
+        first = await resolver.resolve("https://media.example/video.mp4")
+        second = await resolver.resolve("https://media.example/video.mp4")
+        assert second is first
+        assert second.media_id == first.media_id
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        resolver.shutdown()
+
+
 def test_bilibili_cookie_is_scoped_and_written_for_ytdlp() -> None:
     cleaned = _clean_bilibili_cookie(
         "SESSDATA=session%2Cvalue; bili_jct=csrf; evil=ignored\r\nInjected=yes",
@@ -146,7 +166,7 @@ def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.1.0"
+    assert payload["version"] == "1.1.1"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
     assert "size_bytes" in payload["platforms"]["windows"]
     assert "signing_certificate_sha256" in payload["platforms"]["windows"]

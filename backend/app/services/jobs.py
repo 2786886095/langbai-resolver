@@ -8,6 +8,7 @@ import queue
 import re
 import signal
 import shutil
+
 # Media processing requires fixed argv subprocesses; shell execution is never used.
 import subprocess  # nosec B404
 import threading
@@ -44,6 +45,37 @@ _TEXT_ERROR_CONTENT_TYPES = {
     "application/xml",
     "application/xhtml+xml",
     "application/dash+xml",
+}
+_VIDEO_OUTPUT_FORMATS = {"mp4", "m4v", "mov", "mkv", "webm", "avi", "ts"}
+_AUDIO_OUTPUT_FORMATS = {
+    "mp3",
+    "m4a",
+    "aac",
+    "wav",
+    "flac",
+    "ogg",
+    "opus",
+    "ac3",
+    "aiff",
+    "aif",
+}
+_IMAGE_OUTPUT_FORMATS = {"jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif"}
+_MEDIA_OUTPUT_FORMATS = (
+    _VIDEO_OUTPUT_FORMATS | _AUDIO_OUTPUT_FORMATS | _IMAGE_OUTPUT_FORMATS
+)
+_IMAGE_INPUT_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".avif",
+    ".tiff",
+    ".tif",
+    ".tga",
 }
 
 
@@ -306,9 +338,7 @@ class JobManager:
 
         selected = entry.specs[option_id]
         if selected.direct_url:
-            validate_public_url(
-                selected.direct_url, self._settings.allow_fake_ip_dns
-            )
+            validate_public_url(selected.direct_url, self._settings.allow_fake_ip_dns)
         now = time.time()
         job_id = uuid.uuid4().hex
         self._reserve_capacity(job_id, self._download_reservation(selected))
@@ -339,7 +369,13 @@ class JobManager:
         display_name: str | None = None,
     ) -> DownloadJob:
         self._prune()
-        allowed = {"extract_audio", "compress_video", "compress_image", "metadata"}
+        allowed = {
+            "extract_audio",
+            "compress_video",
+            "compress_image",
+            "convert_media",
+            "metadata",
+        }
         if operation not in allowed:
             raise ValueError("不支持的工具操作")
         now = time.time()
@@ -642,9 +678,7 @@ class JobManager:
         for index, direct_url in enumerate(candidates):
             attempt = replace(spec, direct_url=direct_url, fallback_urls=())
             try:
-                return await self._download_direct_once(
-                    job_id, title, attempt, job_dir
-                )
+                return await self._download_direct_once(job_id, title, attempt, job_dir)
             except (JobCancelledError, StorageLimitError, UnsafeUrlError):
                 raise
             except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
@@ -823,7 +857,9 @@ class JobManager:
                                 async with lock:
                                     next_part_size = downloaded[index] + len(chunk)
                                     if next_part_size > expected:
-                                        raise RuntimeError("下载分段返回了超出范围的内容")
+                                        raise RuntimeError(
+                                            "下载分段返回了超出范围的内容"
+                                        )
                                     aggregate = (
                                         sum(downloaded)
                                         - downloaded[index]
@@ -872,9 +908,7 @@ class JobManager:
                                 self._storage_usage() + len(chunk)
                                 > self._settings.max_total_storage_bytes
                             ):
-                                raise StorageLimitError(
-                                    "下载缓存超过总容量限制"
-                                )
+                                raise StorageLimitError("下载缓存超过总容量限制")
                             output.write(chunk)
                     part.unlink(missing_ok=True)
             if target.stat().st_size != total:
@@ -1119,6 +1153,52 @@ class JobManager:
             )
             self._set_progress(job_id, 0.99)
             return target
+        if spec.operation == "convert_media":
+            extension = spec.output_format.lower().lstrip(".")
+            if extension not in _MEDIA_OUTPUT_FORMATS:
+                raise ValueError(f"不支持转换为 {extension.upper()}")
+            stream_output = self._run_captured(
+                job_id,
+                [
+                    self._ffprobe_binary(),
+                    "-protocol_whitelist",
+                    "file,pipe,fd,crypto",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "json",
+                    str(source),
+                ],
+            )
+            streams = json.loads(stream_output).get("streams") or []
+            has_video = any(item.get("codec_type") == "video" for item in streams)
+            has_audio = any(item.get("codec_type") == "audio" for item in streams)
+            source_is_image = source.suffix.lower() in _IMAGE_INPUT_EXTENSIONS
+            if extension in _VIDEO_OUTPUT_FORMATS and not (
+                has_video and (not source_is_image or source.suffix.lower() == ".gif")
+            ):
+                raise ValueError("源文件不包含可转换的视频画面")
+            if extension in _AUDIO_OUTPUT_FORMATS and not has_audio:
+                raise ValueError("源文件不包含可转换的音轨")
+            if extension in _IMAGE_OUTPUT_FORMATS and not has_video:
+                raise ValueError("源文件不包含可转换的图像或视频画面")
+
+            target = job_dir / f"{stem}-converted.{extension}"
+            quality = min(max(spec.quality, 1), 100)
+            crf = min(max(round(39 - quality * 0.22), 17), 36)
+            audio_bitrate = (
+                "96k" if quality < 50 else "160k" if quality < 80 else "256k"
+            )
+            arguments = self._media_conversion_arguments(
+                extension,
+                crf=crf,
+                audio_bitrate=audio_bitrate,
+                quality=quality,
+            )
+            self._run_ffmpeg(job_id, source, target, arguments)
+            return target
         if spec.operation == "extract_audio":
             extension = (
                 spec.output_format
@@ -1167,6 +1247,116 @@ class JobManager:
             )
             return target
         raise RuntimeError("未知工具操作")
+
+    @staticmethod
+    def _media_conversion_arguments(
+        extension: str,
+        *,
+        crf: int,
+        audio_bitrate: str,
+        quality: int,
+    ) -> list[str]:
+        if extension in {"mp4", "mov", "mkv", "m4v"}:
+            result = [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                str(crf),
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                audio_bitrate,
+            ]
+            if extension != "mkv":
+                result.extend(["-movflags", "+faststart"])
+            return [*result, "-f", "mp4"] if extension == "m4v" else result
+        if extension == "webm":
+            return [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libvpx-vp9",
+                "-crf",
+                str(min(crf + 8, 45)),
+                "-b:v",
+                "0",
+                "-row-mt",
+                "1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                audio_bitrate,
+            ]
+        if extension == "avi":
+            return [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "mpeg4",
+                "-q:v",
+                str(max(2, min(12, crf // 3))),
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                audio_bitrate,
+            ]
+        if extension == "ts":
+            return [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "mpeg2video",
+                "-q:v",
+                str(max(2, min(12, crf // 3))),
+                "-c:a",
+                "aac",
+                "-b:a",
+                audio_bitrate,
+                "-f",
+                "mpegts",
+            ]
+        audio_codecs = {
+            "mp3": ["-vn", "-c:a", "libmp3lame", "-b:a", audio_bitrate],
+            "m4a": ["-vn", "-c:a", "aac", "-b:a", audio_bitrate],
+            "aac": ["-vn", "-c:a", "aac", "-b:a", audio_bitrate],
+            "wav": ["-vn", "-c:a", "pcm_s16le"],
+            "flac": ["-vn", "-c:a", "flac", "-compression_level", "8"],
+            "ogg": ["-vn", "-c:a", "libvorbis", "-q:a", "7"],
+            "opus": ["-vn", "-c:a", "libopus", "-b:a", audio_bitrate],
+            "ac3": ["-vn", "-c:a", "ac3", "-b:a", "384k"],
+            "aiff": ["-vn", "-c:a", "pcm_s16be"],
+            "aif": ["-vn", "-c:a", "pcm_s16be"],
+        }
+        if extension in audio_codecs:
+            return audio_codecs[extension]
+        image_quality = max(2, min(31, round(31 - quality * 0.27)))
+        image_codecs = {
+            "jpg": ["-frames:v", "1", "-q:v", str(image_quality)],
+            "jpeg": ["-frames:v", "1", "-q:v", str(image_quality)],
+            "png": ["-frames:v", "1", "-compression_level", "6"],
+            "webp": ["-frames:v", "1", "-c:v", "libwebp", "-quality", str(quality)],
+            "bmp": ["-frames:v", "1"],
+            "gif": ["-vf", "fps=15", "-loop", "0"],
+            "tiff": ["-frames:v", "1", "-c:v", "tiff"],
+            "tif": ["-frames:v", "1", "-c:v", "tiff"],
+        }
+        if extension in image_codecs:
+            return image_codecs[extension]
+        raise ValueError(f"不支持转换为 {extension.upper()}")
 
     def _run_ffmpeg(
         self,
@@ -1512,9 +1702,10 @@ class JobManager:
                     self._progress_samples[job_id] = (now_monotonic, downloaded)
                 elif elapsed >= 0.1:
                     measured_speed = delta / elapsed
-            if (
-                not progress_restarted
-                and (speed is not None or measured_speed is not None or previous_sample is None)
+            if not progress_restarted and (
+                speed is not None
+                or measured_speed is not None
+                or previous_sample is None
             ):
                 self._progress_samples[job_id] = (now_monotonic, downloaded)
 

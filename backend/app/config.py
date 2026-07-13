@@ -57,9 +57,9 @@ class Settings:
     instance_id: str = ""
     jamendo_client_id: str | None = None
     audius_api_key: str | None = None
-    update_version: str = "1.1.0"
+    update_version: str = "1.1.1"
     update_notes: str = (
-        "手机端适配、图片预览、本地格式转换、下载速度与应用内更新改进。"
+        "解析缓存与预热、自适应图片预览、全屏缩放、全面媒体格式转换与安装包体积优化。"
     )
     update_windows_url: str = ""
     update_windows_sha256: str = ""
@@ -145,10 +145,10 @@ class Settings:
             or secrets.token_hex(8),
             jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
             audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.1.0").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.1.1").strip(),
             update_notes=os.getenv(
                 "LANGBAI_UPDATE_NOTES",
-                "手机端适配、图片预览、本地格式转换、下载速度与应用内更新改进。",
+                "解析缓存与预热、自适应图片预览、全面媒体格式转换与安装包体积优化。",
             ).strip(),
             update_windows_url=os.getenv("LANGBAI_UPDATE_WINDOWS_URL", "").strip(),
             update_windows_sha256=os.getenv(
