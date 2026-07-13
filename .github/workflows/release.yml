@@ -298,7 +298,7 @@ jobs:
           python scripts/create_update_manifest.py
           --version "$RELEASE_VERSION"
           --repository "$GITHUB_REPOSITORY"
-          --notes "解析缓存与预热、自适应图片预览、全屏缩放、全面媒体格式转换与安装包体积优化。"
+          --notes "修复主题切换遮挡；格式转换改为三步流程，并新增 TXT、DOCX、ODT、RTF、HTML、Markdown、CSV、JSON、XML 文档互转。"
           --assets release-assets
           --output release-assets/update-manifest.json
       - name: Publish GitHub Release

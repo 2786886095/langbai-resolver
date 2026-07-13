@@ -97,7 +97,7 @@ void main() {
 
     expect(find.text('启动时自动检查更新'), findsOneWidget);
     expect(find.text('立即检查更新'), findsOneWidget);
-    expect(find.text('当前版本 1.1.2 · 按当前平台检查'), findsOneWidget);
+    expect(find.text('当前版本 1.1.3 · 按当前平台检查'), findsOneWidget);
     expect(find.text('默认保存位置'), findsOneWidget);
     expect(find.text('识别剪贴板链接'), findsOneWidget);
     expect(find.text('高级工具服务'), findsNothing);

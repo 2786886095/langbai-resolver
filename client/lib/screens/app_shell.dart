@@ -984,20 +984,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 ),
                 VerticalDivider(width: 1, color: context.palette.border),
                 Expanded(
-                  child: Stack(
+                  child: Column(
                     children: [
-                      Positioned.fill(
-                        child: IndexedStack(
-                          index: _selectedIndex,
-                          children: pages,
+                      Container(
+                        height: 56,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        alignment: Alignment.centerRight,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surface,
+                          border: Border(
+                            bottom: BorderSide(color: context.palette.border),
+                          ),
                         ),
-                      ),
-                      Positioned(
-                        top: 16,
-                        right: 20,
                         child: _ThemeMenu(
                           themeMode: widget.themeMode,
                           onChanged: widget.onThemeModeChanged,
+                        ),
+                      ),
+                      Expanded(
+                        child: IndexedStack(
+                          index: _selectedIndex,
+                          children: pages,
                         ),
                       ),
                     ],
