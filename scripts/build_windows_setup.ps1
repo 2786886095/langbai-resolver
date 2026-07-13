@@ -176,9 +176,16 @@ Copy-Item -Path (Join-Path $BackendDist "*") -Destination $BackendBundle -Recurs
 
 # Ship the supported Visual C++ runtime app-locally, so a clean non-admin
 # Windows account does not need a separate redistributable installation.
-$VcRedistRoot = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022"
-$VcRuntimeDirectory = Get-ChildItem -Path $VcRedistRoot `
-    -Filter "Microsoft.VC143.CRT" -Directory -Recurse -ErrorAction SilentlyContinue |
+$VcRedistRoots = @(
+    $env:VCToolsRedistDir,
+    (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022"),
+    (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022")
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+$VcRuntimeDirectory = $VcRedistRoots |
+    ForEach-Object {
+        Get-ChildItem -LiteralPath $_ -Filter "Microsoft.VC143.CRT" `
+            -Directory -Recurse -ErrorAction SilentlyContinue
+    } |
     Where-Object { $_.FullName -match '\\Redist\\MSVC\\[^\\]+\\x64\\Microsoft\.VC143\.CRT$' } |
     Sort-Object { [version]$_.Parent.Parent.Name } -Descending |
     Select-Object -First 1
