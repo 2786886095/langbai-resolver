@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           python scripts/resolve_release_version.py --pubspec client/pubspec.yaml --github-env "$env:GITHUB_ENV"
-          gh release view "v$env:RELEASE_VERSION" --repo "$env:GITHUB_REPOSITORY" | Out-Null
+          gh release view "v$env:RELEASE_VERSION_INPUT" --repo "$env:GITHUB_REPOSITORY" | Out-Null
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Install pinned packaging tools
