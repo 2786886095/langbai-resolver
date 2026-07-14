@@ -70,6 +70,8 @@ jobs:
           --build-number "$APP_BUILD_NUMBER"
           --dart-define="APP_VERSION=$APP_VERSION"
           --dart-define="UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+      - name: Verify Android parser reflection mapping
+        run: python ../scripts/verify_android_r8_mapping.py --mapping build/app/outputs/mapping/release/mapping.txt
       - name: Verify persistent Android signing certificate
         run: |
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"

@@ -72,7 +72,7 @@ Windows Setup 需要 Flutter、Visual Studio C++ 桌面工作负载、Inno Setup
 
 ```powershell
 .\scripts\build_windows_setup.ps1 `
-  -Version "1.1.6" `
+  -Version "1.1.7" `
   -UpdateManifestUrl "https://github.com/2786886095/langbai-resolver/releases/latest/download/update-manifest.json" `
   -SigningCertificatePath "C:\secure\langbai-signing.pfx"
 ```
