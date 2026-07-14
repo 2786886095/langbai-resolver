@@ -66,6 +66,7 @@ jobs:
           flutter pub get
           flutter analyze
           flutter test
+          bash ./android/gradlew --project-dir android :app:testDebugUnitTest --no-daemon
 
   windows:
     name: Build and smoke-test Windows Setup
