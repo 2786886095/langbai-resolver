@@ -48,6 +48,8 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Test Android application module
+        run: bash ./android/gradlew --project-dir android :app:testDebugUnitTest --no-daemon
       - name: Lint Android application module
         run: bash ./android/gradlew --project-dir android :app:lintDebug --no-daemon
       - name: Configure persistent Android release signing

@@ -57,7 +57,7 @@ class Settings:
     instance_id: str = ""
     jamendo_client_id: str | None = None
     audius_api_key: str | None = None
-    update_version: str = "1.1.5"
+    update_version: str = "1.1.6"
     update_notes: str = (
         "解析缓存与预热、自适应图片预览、全屏缩放、全面媒体格式转换与安装包体积优化。"
     )
@@ -145,7 +145,7 @@ class Settings:
             or secrets.token_hex(8),
             jamendo_client_id=os.getenv("JAMENDO_CLIENT_ID", "").strip() or None,
             audius_api_key=os.getenv("AUDIUS_API_KEY", "").strip() or None,
-            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.1.5").strip(),
+            update_version=os.getenv("LANGBAI_UPDATE_VERSION", "1.1.6").strip(),
             update_notes=os.getenv(
                 "LANGBAI_UPDATE_NOTES",
                 "解析缓存与预热、自适应图片预览、全面媒体格式转换与安装包体积优化。",

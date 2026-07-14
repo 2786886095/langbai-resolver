@@ -3,6 +3,19 @@ import 'package:media_harbor/services/update_models.dart';
 import 'package:media_harbor/services/update_service.dart';
 
 void main() {
+  test('GitHub manifest checks bypass stale mobile caches', () {
+    final uri = updateManifestUriWithCacheBust(
+      Uri.parse(
+        'https://github.com/example/project/releases/latest/download/update-manifest.json',
+      ),
+      now: DateTime.fromMillisecondsSinceEpoch(123456),
+    );
+
+    expect(uri.queryParameters['langbai_update_check'], '123456');
+    expect(uri.scheme, 'https');
+    expect(uri.path, endsWith('/update-manifest.json'));
+  });
+
   UpdateManifest manifest(Map<String, String> urls) => UpdateManifest(
         version: '1.1.1',
         notes: '',
