@@ -11,7 +11,7 @@ import 'runtime_environment.dart';
 import 'service_credential_store.dart';
 import 'update_models.dart';
 
-const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.5');
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.6');
 
 const _configuredManifestUrl = String.fromEnvironment('UPDATE_MANIFEST_URL');
 const _defaultApiUrl = String.fromEnvironment(
@@ -31,11 +31,14 @@ class UpdateService {
         .trim()
         .replaceAll(RegExp(r'/+$'), '');
     final usesConfiguredManifest = _configuredManifestUrl.trim().isNotEmpty;
-    final uri = Uri.parse(
+    final baseUri = Uri.parse(
       usesConfiguredManifest
           ? _configuredManifestUrl.trim()
           : '$apiBase/api/v1/update',
     );
+    final uri = usesConfiguredManifest
+        ? updateManifestUriWithCacheBust(baseUri)
+        : baseUri;
     if (!_isAllowedManifestUri(uri)) {
       throw const UpdateException('更新清单必须使用 HTTPS 地址');
     }
@@ -189,7 +192,10 @@ Future<http.StreamedResponse> _sendManifestRequest(
   for (var redirects = 0; redirects <= 5; redirects++) {
     final request = http.Request('GET', current)
       ..followRedirects = false
-      ..headers['User-Agent'] = 'langbai-resolver-updater';
+      ..headers['User-Agent'] = 'langbai-resolver-updater'
+      ..headers['Accept'] = 'application/json'
+      ..headers['Cache-Control'] = 'no-cache, no-store, max-age=0'
+      ..headers['Pragma'] = 'no-cache';
     if (instanceToken.isNotEmpty && _sameOrigin(initial, current)) {
       request.headers['X-Langbai-Instance-Token'] = instanceToken;
     }
@@ -209,6 +215,17 @@ Future<http.StreamedResponse> _sendManifestRequest(
     current = next;
   }
   throw const UpdateException('更新清单重定向次数过多');
+}
+
+@visibleForTesting
+Uri updateManifestUriWithCacheBust(Uri uri, {DateTime? now}) {
+  final value = (now ?? DateTime.now()).millisecondsSinceEpoch.toString();
+  return uri.replace(
+    queryParameters: <String, String>{
+      ...uri.queryParameters,
+      'langbai_update_check': value,
+    },
+  );
 }
 
 bool _sameOrigin(Uri left, Uri right) =>

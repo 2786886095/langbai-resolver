@@ -298,7 +298,7 @@ jobs:
           python scripts/create_update_manifest.py
           --version "$RELEASE_VERSION"
           --repository "$GITHUB_REPOSITORY"
-          --notes "工具卡片统一对齐；音乐支持软件内播放、播放进度控制、音质选择和直接保存到用户设置的位置，并优化手机窄屏布局。"
+          --notes "修复 Android 手机解析任务只显示 d2.f 的问题；解析引擎会定期自动更新，遇到无有效信息的引擎异常会自动修复并重试一次，同时展示可读的失败原因。"
           --assets release-assets
           --output release-assets/update-manifest.json
       - name: Publish GitHub Release

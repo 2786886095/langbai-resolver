@@ -40,6 +40,7 @@ import java.util.UUID
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -65,6 +66,8 @@ class MainActivity : FlutterActivity() {
 
     @Volatile
     private var engineReady = false
+
+    private val engineRepairAttempted = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,7 +101,7 @@ class MainActivity : FlutterActivity() {
         worker.execute {
             runCatching {
                 Thread.sleep(700)
-                ensureEngine()
+                refreshEngineIfDue()
             }
         }
     }
@@ -288,7 +291,8 @@ class MainActivity : FlutterActivity() {
                 val processId = pendingInstallProcessId ?: "app-update"
                 pendingInstallApk = null
                 pendingInstallProcessId = null
-                if (apk != null && apk.isFile && canInstallPackages()) {
+                if (apk == null) return
+                if (apk.isFile && canInstallPackages()) {
                     launchPackageInstaller(apk)
                 } else {
                     emitUpdateProgress(
@@ -655,19 +659,17 @@ class MainActivity : FlutterActivity() {
         if (isDouyinUrl(url)) {
             return cacheResolvedResponse(sourceCacheKey, resolveDouyinShare(url))
         }
-        ensureEngine()
-        val response = engineLock.read {
-            withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
-                val request = YoutubeDLRequest(url)
-                    .addOption("--dump-single-json")
-                    .addOption("--no-playlist")
-                    .addOption("--skip-download")
-                    .addOption("--socket-timeout", "25")
-                    .addOption("--retries", "1")
-                    .addOption("--extractor-retries", "1")
-                cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
-                YoutubeDL.getInstance().execute(request)
+        val response = try {
+            executeResolverRequest(url, bilibiliCookie)
+        } catch (error: Throwable) {
+            if (
+                !AndroidErrorFormatter.isOpaqueEngineFailure(error) ||
+                !engineRepairAttempted.compareAndSet(false, true)
+            ) {
+                throw error
             }
+            runCatching { forceRefreshEngine() }
+            executeResolverRequest(url, bilibiliCookie)
         }
         val root = JSONObject(response.out.trim())
         val effective = effectiveEntry(root)
@@ -736,6 +738,45 @@ class MainActivity : FlutterActivity() {
                 "由 Android 本机解析，媒体链接不会发送到 langbai 服务器。",
             ),
         ))
+    }
+
+    private fun executeResolverRequest(
+        url: String,
+        bilibiliCookie: String?,
+    ) = engineLock.read {
+        ensureEngine()
+        withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
+            val request = YoutubeDLRequest(url)
+                .addOption("--dump-single-json")
+                .addOption("--no-playlist")
+                .addOption("--skip-download")
+                .addOption("--socket-timeout", "25")
+                .addOption("--retries", "1")
+                .addOption("--extractor-retries", "1")
+            cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
+            YoutubeDL.getInstance().execute(request)
+        }
+    }
+
+    private fun refreshEngineIfDue() {
+        val preferences = getSharedPreferences(ENGINE_PREFERENCES, MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val lastAttempt = preferences.getLong(ENGINE_LAST_REFRESH_ATTEMPT, 0L)
+        if (now - lastAttempt < ENGINE_REFRESH_INTERVAL_MS) {
+            ensureEngine()
+            return
+        }
+        preferences.edit().putLong(ENGINE_LAST_REFRESH_ATTEMPT, now).apply()
+        runCatching { forceRefreshEngine() }
+            .onFailure { ensureEngine() }
+    }
+
+    private fun forceRefreshEngine() = engineLock.write {
+        ensureEngine()
+        YoutubeDL.getInstance().updateYoutubeDL(
+            applicationContext,
+            YoutubeDL.UpdateChannel.STABLE,
+        )
     }
 
     private fun cacheResolvedResponse(
@@ -1902,7 +1943,11 @@ class MainActivity : FlutterActivity() {
         else -> "视频"
     }
 
-    private fun friendlyMessage(error: Throwable): String {
+    private fun friendlyMessage(error: Throwable): String =
+        AndroidErrorFormatter.format(error)
+
+    @Suppress("unused")
+    private fun legacyFriendlyMessage(error: Throwable): String {
         if (
             error is DownloadCancelledException ||
             generateSequence(error) { it.cause }.any {
@@ -2000,6 +2045,9 @@ class MainActivity : FlutterActivity() {
     private data class PublishedFile(val name: String, val location: String)
 
     companion object {
+        private const val ENGINE_PREFERENCES = "langbai.parser.engine"
+        private const val ENGINE_LAST_REFRESH_ATTEMPT = "last_refresh_attempt"
+        private const val ENGINE_REFRESH_INTERVAL_MS = 24L * 60 * 60 * 1000
         private const val STORAGE_PERMISSION_REQUEST = 1708
         private const val DIRECTORY_PICKER_REQUEST = 1709
         private const val INSTALL_PERMISSION_REQUEST = 1710
