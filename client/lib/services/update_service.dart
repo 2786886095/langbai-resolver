@@ -11,7 +11,7 @@ import 'runtime_environment.dart';
 import 'service_credential_store.dart';
 import 'update_models.dart';
 
-const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.6');
+const appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.7');
 
 const _configuredManifestUrl = String.fromEnvironment('UPDATE_MANIFEST_URL');
 const _defaultApiUrl = String.fromEnvironment(

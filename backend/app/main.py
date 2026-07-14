@@ -54,7 +54,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.1.6",
+    version="1.1.7",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
     lifespan=lifespan,
 )

@@ -29,6 +29,35 @@ manifest_tool = _load(
 project_version = _load(
     "read_project_version", ROOT / "scripts" / "read_project_version.py"
 )
+android_mapping = _load(
+    "verify_android_r8_mapping",
+    ROOT / "scripts" / "verify_android_r8_mapping.py",
+)
+
+
+class AndroidMappingTests(unittest.TestCase):
+    def test_reflected_zip_classes_must_keep_their_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            mapping = Path(temp) / "mapping.txt"
+            mapping.write_text(
+                "\n".join(
+                    f"{name} -> {name}:"
+                    for name in sorted(android_mapping.REQUIRED_REFLECTED_CLASSES)
+                ),
+                encoding="utf-8",
+            )
+            android_mapping.verify_mapping(mapping)
+
+            mapping.write_text(
+                mapping.read_text(encoding="utf-8").replace(
+                    "org.apache.commons.compress.archivers.zip.AsiExtraField -> "
+                    "org.apache.commons.compress.archivers.zip.AsiExtraField:",
+                    "org.apache.commons.compress.archivers.zip.AsiExtraField -> d2.a:",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "renamed by R8"):
+                android_mapping.verify_mapping(mapping)
 
 
 class ReleaseVersionTests(unittest.TestCase):
@@ -164,6 +193,15 @@ class ManifestTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_android_parser_reflection_classes_are_kept(self) -> None:
+        rules = (ROOT / "client" / "android" / "app" / "proguard-rules.pro").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "-keep class org.apache.commons.compress.archivers.zip.** { *; }",
+            rules,
+        )
+
     def test_release_validation_exports_version_to_following_steps(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
             encoding="utf-8"
