@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -79,5 +80,35 @@ void main() {
     );
 
     expect(await File(result.path!).readAsBytes(), bytes);
+  });
+
+  test('long Chinese filenames keep their beginning and fit byte limits', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'langbai-long-filename-test-',
+    );
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close(force: true);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+    server.listen((request) async {
+      request.response.add(const <int>[1, 2, 3]);
+      await request.response.close();
+    });
+    final title =
+        '好牛的审美！原来是MiniMax H3！${List.filled(40, '画面配乐音效一次生成').join()}.mp4';
+
+    final result = await saveDownload(
+      Uri.parse('http://127.0.0.1:${server.port}/video'),
+      title,
+      (_) {},
+      destination: SaveDestination.custom,
+      customDestinationUri: directory.path,
+    );
+    final filename = File(result.path!).uri.pathSegments.last;
+
+    expect(filename, startsWith('好牛的审美！原来是MiniMax H3！'));
+    expect(filename, endsWith('.mp4'));
+    expect(utf8.encode(filename).length, lessThanOrEqualTo(220));
   });
 }

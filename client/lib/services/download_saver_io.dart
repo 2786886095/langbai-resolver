@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -198,7 +199,35 @@ Future<SaveResult> saveDownload(
 String _safeFilename(String value) {
   final leaf = value.split(RegExp(r'[\\/]')).last.trim();
   final cleaned = leaf.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_');
-  return cleaned.isEmpty ? 'langbai-download.bin' : cleaned;
+  if (cleaned.isEmpty) return 'langbai-download.bin';
+  final dot = cleaned.lastIndexOf('.');
+  final hasExtension = dot > 0 && dot < cleaned.length - 1;
+  final rawExtension = hasExtension ? cleaned.substring(dot + 1) : '';
+  final normalizedExtension = rawExtension.replaceAll(
+    RegExp('[^A-Za-z0-9]'),
+    '',
+  );
+  final extension = normalizedExtension.length > 12
+      ? normalizedExtension.substring(0, 12)
+      : normalizedExtension;
+  final suffix = extension.isEmpty ? '' : '.$extension';
+  final stem = hasExtension ? cleaned.substring(0, dot) : cleaned;
+  final budget = (220 - utf8.encode(suffix).length).clamp(1, 220).toInt();
+  final safeStem = _truncateUtf8(stem, budget).trimRight();
+  return '${safeStem.isEmpty ? 'langbai-download' : safeStem}$suffix';
+}
+
+String _truncateUtf8(String value, int maxBytes) {
+  final result = StringBuffer();
+  var bytes = 0;
+  for (final rune in value.runes) {
+    final character = String.fromCharCode(rune);
+    final size = utf8.encode(character).length;
+    if (bytes + size > maxBytes) break;
+    result.write(character);
+    bytes += size;
+  }
+  return result.toString();
 }
 
 String? _localPath(String? value) {
