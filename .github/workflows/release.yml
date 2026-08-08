@@ -300,7 +300,7 @@ jobs:
           python scripts/create_update_manifest.py
           --version "$RELEASE_VERSION"
           --repository "$GITHUB_REPOSITORY"
-          --notes "修复 Android Release 混淆导致 class d2.a is not a concrete class、解析引擎无法初始化的问题；新增 R8 反射类保留规则与发布映射校验。"
+          --notes "修复抖音等作品标题过长时 Android 报 ENAMETOOLONG 的问题；文件名保留标题前半部分并按 UTF-8 字节安全截断，同时保留扩展名与重复编号。"
           --assets release-assets
           --output release-assets/update-manifest.json
       - name: Publish GitHub Release

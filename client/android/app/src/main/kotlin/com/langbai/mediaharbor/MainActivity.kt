@@ -504,7 +504,7 @@ class MainActivity : FlutterActivity() {
             ?: error("请选择待转换文件")
         require(uri.scheme == "content") { "待转换文件地址不受支持" }
         val displayName = DocumentFile.fromSingleUri(this, uri)?.name ?: "input.bin"
-        val destination = File(taskDirectory, safeFilename(displayName))
+        val destination = File(taskDirectory, FilenameSanitizer.filename(displayName))
         contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(destination).use { output ->
                 val buffer = ByteArray(128 * 1024)
@@ -1498,7 +1498,7 @@ class MainActivity : FlutterActivity() {
         processId: String,
     ): File {
         val extension = option.extension.ifBlank { extensionFromUrl(directUrl, "bin") }
-        val target = File(taskDir, "${safeFilename(title)}.$extension")
+        val target = File(taskDir, FilenameSanitizer.withExtension(title, extension))
         target.delete()
         val connection = URL(directUrl).openConnection() as HttpURLConnection
         activeConnections[processId] = connection
@@ -1600,7 +1600,7 @@ class MainActivity : FlutterActivity() {
         val directory = DocumentFile.fromTreeUri(this, treeUri)
             ?.takeIf { it.isDirectory && it.canWrite() }
             ?: error("无法写入自选目录")
-        val name = uniqueDocumentName(directory, source.name.take(220))
+        val name = uniqueDocumentName(directory, FilenameSanitizer.filename(source.name))
         val target = directory.createFile(mimeType(name), name)
             ?: error("无法在自选目录中创建文件")
         try {
@@ -1616,18 +1616,15 @@ class MainActivity : FlutterActivity() {
 
     private fun uniqueDocumentName(directory: DocumentFile, filename: String): String {
         if (directory.findFile(filename) == null) return filename
-        val extension = filename.substringAfterLast('.', "")
-        val stem = filename.removeSuffix(if (extension.isEmpty()) "" else ".$extension")
         for (index in 2 until 10_000) {
-            val suffix = if (extension.isEmpty()) "" else ".$extension"
-            val candidate = "$stem ($index)$suffix"
+            val candidate = FilenameSanitizer.collisionName(filename, index)
             if (directory.findFile(candidate) == null) return candidate
         }
-        return "${UUID.randomUUID()}-$filename"
+        return FilenameSanitizer.filename("${UUID.randomUUID()}-$filename")
     }
 
     private fun publishToDownloads(source: File): PublishedFile {
-        val name = source.name.take(220)
+        val name = FilenameSanitizer.filename(source.name)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -1664,7 +1661,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun publishToGallery(source: File, mediaType: String): PublishedFile {
-        val name = source.name.take(220)
+        val name = FilenameSanitizer.filename(source.name)
         val directoryName = if (mediaType == "image") {
             Environment.DIRECTORY_PICTURES
         } else {
@@ -1888,19 +1885,13 @@ class MainActivity : FlutterActivity() {
         }.getOrNull() ?: fallback
     }
 
-    private fun safeFilename(value: String): String {
-        val cleaned = value.replace(Regex("[\\\\/:*?\"<>|\\r\\n]+"), "_").trim().take(160)
-        return cleaned.ifEmpty { "langbai-media" }
-    }
-
     private fun uniqueFile(directory: File, name: String): File {
-        val direct = File(directory, name)
+        val safeName = FilenameSanitizer.filename(name)
+        val direct = File(directory, safeName)
         if (!direct.exists()) return direct
-        val extension = name.substringAfterLast('.', "")
-        val stem = name.removeSuffix(if (extension.isEmpty()) "" else ".$extension")
         var index = 2
         while (true) {
-            val candidate = File(directory, "$stem ($index)${if (extension.isEmpty()) "" else ".$extension"}")
+            val candidate = File(directory, FilenameSanitizer.collisionName(safeName, index))
             if (!candidate.exists()) return candidate
             index += 1
         }

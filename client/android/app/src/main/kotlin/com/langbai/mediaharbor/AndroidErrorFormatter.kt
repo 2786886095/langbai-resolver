@@ -51,6 +51,9 @@ internal object AndroidErrorFormatter {
         if ("phantomjs not found" in lower) {
             return "该平台需要额外浏览器组件，当前手机本地解析器暂不支持"
         }
+        if ("enametoolong" in lower || "file name too long" in lower) {
+            return "媒体标题过长，软件已自动缩短文件名，请重新解析"
+        }
         if (
             "unable to download webpage" in lower ||
             "connection refused" in lower ||

@@ -42,4 +42,14 @@ class AndroidErrorFormatterTest {
             AndroidErrorFormatter.format(error),
         )
     }
+
+    @Test
+    fun `overlong filename gets a readable retry message`() {
+        val error = IllegalStateException("open failed: ENAMETOOLONG (File name too long)")
+
+        assertEquals(
+            "媒体标题过长，软件已自动缩短文件名，请重新解析",
+            AndroidErrorFormatter.format(error),
+        )
+    }
 }
