@@ -56,12 +56,20 @@ class ApiClient {
     }
   }
 
-  Future<MediaInfo> resolve(String url, {String? bilibiliCookie}) async {
+  Future<MediaInfo> resolve(
+    String url, {
+    String? bilibiliCookie,
+    String? douyinCookie,
+  }) async {
     final response = await _client
         .post(
           _uri('/api/v1/resolve'),
           headers: _jsonHeaders(),
-          body: jsonEncode({'url': url, 'bilibili_cookie': ?bilibiliCookie}),
+          body: jsonEncode({
+            'url': url,
+            'bilibili_cookie': ?bilibiliCookie,
+            'douyin_cookie': ?douyinCookie,
+          }),
         )
         .timeout(const Duration(seconds: 75));
     return MediaInfo.fromJson(_jsonOrThrow(response));

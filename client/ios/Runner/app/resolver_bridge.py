@@ -63,6 +63,17 @@ _BILIBILI_COOKIE_NAMES = {
     "bili_ticket",
     "bili_ticket_expires",
 }
+_SAFE_COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_DOUYIN_AUTH_COOKIE_NAMES = {
+    "sessionid",
+    "sessionid_ss",
+    "sid_guard",
+    "sid_tt",
+    "uid_tt",
+    "uid_tt_ss",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+}
 
 
 def _text(value: object) -> str | None:
@@ -138,6 +149,34 @@ def _clean_bilibili_cookie(value: object, url: str) -> str | None:
     return "; ".join(pairs) if any(x.startswith("SESSDATA=") for x in pairs) else None
 
 
+def _clean_douyin_cookie(value: object, url: str) -> str | None:
+    raw = _text(value)
+    if not raw or not _is_douyin_url(url) or "\r" in raw or "\n" in raw:
+        return None
+    pairs: list[str] = []
+    authenticated = False
+    total = 0
+    for item in raw.split(";"):
+        name, separator, content = item.strip().partition("=")
+        if (
+            not separator
+            or not _SAFE_COOKIE_NAME_RE.fullmatch(name)
+            or not content
+            or len(content) > 4096
+            or "\r" in content
+            or "\n" in content
+        ):
+            continue
+        pair = f"{name}={content}"
+        next_total = total + (2 if pairs else 0) + len(pair)
+        if next_total > 8192:
+            continue
+        pairs.append(pair)
+        total = next_total
+        authenticated = authenticated or name in _DOUYIN_AUTH_COOKIE_NAMES
+    return "; ".join(pairs) if authenticated else None
+
+
 @contextlib.contextmanager
 def _temporary_bilibili_cookie_file(cookie_header: str | None):
     if not cookie_header:
@@ -153,6 +192,29 @@ def _temporary_bilibili_cookie_file(cookie_header: str | None):
             if separator and name in _BILIBILI_COOKIE_NAMES:
                 lines.append(
                     f".bilibili.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{content}"
+                )
+        Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+@contextlib.contextmanager
+def _temporary_douyin_cookie_file(cookie_header: str | None):
+    if not cookie_header:
+        yield None
+        return
+    descriptor, path = tempfile.mkstemp(prefix="langbai-douyin-", suffix=".txt")
+    os.close(descriptor)
+    try:
+        lines = ["# Netscape HTTP Cookie File"]
+        expires = 4_102_444_800
+        for item in cookie_header.split(";"):
+            name, separator, content = item.strip().partition("=")
+            if separator and _SAFE_COOKIE_NAME_RE.fullmatch(name) and content:
+                lines.append(
+                    f".douyin.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{content}"
                 )
         Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         yield path
@@ -321,7 +383,11 @@ def _friendly_ytdlp_error(error: Exception) -> str:
         "use --cookies-from-browser or --cookies",
     )
     if any(marker in lower for marker in cookie_markers):
-        return "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取 Cookie"
+        return (
+            "该作品需要抖音登录，请在 langbai解析内登录后重试"
+            if "douyin" in lower or "抖音" in lower
+            else "该平台当前要求登录验证；请登录对应平台后重试"
+        )
     if "ip address is blocked" in lower:
         return "当前网络出口被该平台限制，请切换网络后重试"
     if "impersonate targets are available" in lower:
@@ -339,6 +405,11 @@ def _is_douyin_url(value: str) -> bool:
         or host == "iesdouyin.com"
         or host.endswith(".iesdouyin.com")
     )
+
+
+def _may_send_douyin_cookie(value: str) -> bool:
+    host = (urllib.parse.urlparse(value).hostname or "").lower()
+    return host == "douyin.com" or host.endswith(".douyin.com")
 
 
 def _is_kuaishou_url(value: str) -> bool:
@@ -555,10 +626,22 @@ def _first_http_url(value: object) -> str | None:
     )
 
 
-def _resolve_douyin_share(url: str) -> dict[str, Any]:
+def _resolve_douyin_share(
+    url: str, cookie_header: str | None = None
+) -> dict[str, Any]:
     video_id = _douyin_video_id(url)
     if not video_id:
-        request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                **(
+                    {"Cookie": cookie_header}
+                    if cookie_header and _may_send_douyin_cookie(url)
+                    else {}
+                ),
+            },
+        )
         with urllib.request.urlopen(
             request, timeout=20, context=_SSL_CONTEXT
         ) as response:
@@ -574,7 +657,17 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
         raise RuntimeError("无法从抖音链接识别作品 ID")
 
     share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
-    request = urllib.request.Request(share_url, headers={"User-Agent": _USER_AGENT})
+    request = urllib.request.Request(
+        share_url,
+        headers={
+            "User-Agent": _USER_AGENT,
+            **(
+                {"Cookie": cookie_header}
+                if cookie_header and _may_send_douyin_cookie(share_url)
+                else {}
+            ),
+        },
+    )
     with urllib.request.urlopen(request, timeout=25, context=_SSL_CONTEXT) as response:
         html = _read_limited_html(response)
     marker = "window._ROUTER_DATA ="
@@ -676,7 +769,12 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
     media_id = uuid.uuid4().hex
     title = _text(item.get("desc")) or f"抖音作品 {video_id}"
     author = item.get("author") if isinstance(item.get("author"), dict) else {}
-    _CACHE[media_id] = {"source_url": url, "title": title, "specs": specs}
+    _CACHE[media_id] = {
+        "source_url": url,
+        "title": title,
+        "specs": specs,
+        "douyin_cookie": cookie_header,
+    }
     if len(_CACHE) > 80:
         _CACHE.pop(next(iter(_CACHE)))
     duration_ms = _integer(video.get("duration"))
@@ -690,7 +788,11 @@ def _resolve_douyin_share(url: str) -> dict[str, Any]:
         "thumbnail_url": cover_url,
         "options": options,
         "warnings": [
-            "不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。",
+            (
+                "已使用本机加密保存的抖音登录会话。"
+                if cookie_header
+                else "匿名分享页可能使用站点临时 Cookie。"
+            ),
             *(
                 ["无平台水印优先，失败时使用原站兼容源。"]
                 if original_play_url != play_url and not images
@@ -707,13 +809,24 @@ def resolve(argument: str) -> str:
         raise ValueError("未在粘贴内容中找到 http 或 https 链接")
     if _is_kuaishou_url(url):
         return json.dumps(_resolve_kuaishou_share(url), ensure_ascii=False)
+    douyin_cookie = _clean_douyin_cookie(request.get("douyin_cookie"), url)
     if _is_douyin_url(url):
-        return json.dumps(_resolve_douyin_share(url), ensure_ascii=False)
+        try:
+            return json.dumps(
+                _resolve_douyin_share(url, douyin_cookie), ensure_ascii=False
+            )
+        except (RuntimeError, ValueError, json.JSONDecodeError):
+            pass
 
     url = _normalize_bilibili_url(url)
     bilibili_cookie = _clean_bilibili_cookie(request.get("bilibili_cookie"), url)
+    cookie_context = (
+        _temporary_douyin_cookie_file(douyin_cookie)
+        if douyin_cookie
+        else _temporary_bilibili_cookie_file(bilibili_cookie)
+    )
     try:
-        with _temporary_bilibili_cookie_file(bilibili_cookie) as cookie_file:
+        with cookie_context as cookie_file:
             with yt_dlp.YoutubeDL(_base_options(cookie_file)) as ydl:
                 raw = ydl.extract_info(url, download=False)
     except Exception as error:
@@ -929,6 +1042,7 @@ def resolve(argument: str) -> str:
         "title": title,
         "specs": specs,
         "bilibili_cookie": bilibili_cookie,
+        "douyin_cookie": douyin_cookie,
     }
     if len(_CACHE) > 80:
         _CACHE.pop(next(iter(_CACHE)))
@@ -951,6 +1065,11 @@ def resolve(argument: str) -> str:
                 *(
                     ["已使用本机加密保存的B站登录会话请求最高画质。"]
                     if bilibili_cookie
+                    else []
+                ),
+                *(
+                    ["已使用本机加密保存的抖音登录会话。"]
+                    if douyin_cookie
                     else []
                 ),
                 "由 iPhone 本机解析，分离的最高画质和音频会由 iOS 本机合并。",
@@ -1084,7 +1203,8 @@ def download(argument: str) -> str:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     before = {path.resolve() for path in output_dir.iterdir() if path.is_file()}
-    cookie_header = _text(media.get("bilibili_cookie"))
+    bilibili_cookie = _text(media.get("bilibili_cookie"))
+    douyin_cookie = _text(media.get("douyin_cookie"))
     direct_url = spec.get("direct_url")
     try:
         _check_cancelled(cancel_path)
@@ -1097,7 +1217,12 @@ def download(argument: str) -> str:
                 cancel_path=cancel_path,
             )
         else:
-            with _temporary_bilibili_cookie_file(cookie_header) as cookie_file:
+            cookie_context = (
+                _temporary_douyin_cookie_file(douyin_cookie)
+                if douyin_cookie
+                else _temporary_bilibili_cookie_file(bilibili_cookie)
+            )
+            with cookie_context as cookie_file:
                 options = _base_options(cookie_file)
                 options.update(
                     {

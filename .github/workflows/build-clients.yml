@@ -107,6 +107,7 @@ jobs:
       - name: Install pinned packaging tools
         shell: pwsh
         run: |
+          choco install nuget.commandline --version=6.13.2 -y --no-progress
           choco install innosetup --version=6.7.1 -y --no-progress
           choco install ffmpeg --version=8.1.2 -y --no-progress
           choco install aria2 --version=1.37.0 -y --no-progress

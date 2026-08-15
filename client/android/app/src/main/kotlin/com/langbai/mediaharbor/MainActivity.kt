@@ -131,7 +131,11 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("bilibili_cookie"),
                     url,
                 )
-                resolveLocally(url, bilibiliCookie)
+                val douyinCookie = cleanDouyinCookie(
+                    call.argument<String>("douyin_cookie"),
+                    url,
+                )
+                resolveLocally(url, bilibiliCookie, douyinCookie)
             }
             "download" -> withLegacyStoragePermission(result) {
                 runAsync(result) {
@@ -645,8 +649,12 @@ class MainActivity : FlutterActivity() {
         engineReady = true
     }
 
-    private fun resolveLocally(url: String, bilibiliCookie: String?): Map<String, Any?> {
-        val sourceCacheKey = "$url\u0000${bilibiliCookie.orEmpty()}"
+    private fun resolveLocally(
+        url: String,
+        bilibiliCookie: String?,
+        douyinCookie: String?,
+    ): Map<String, Any?> {
+        val sourceCacheKey = "$url\u0000${bilibiliCookie.orEmpty()}\u0000${douyinCookie.orEmpty()}"
         val now = System.currentTimeMillis()
         resolvedBySource[sourceCacheKey]
             ?.takeIf {
@@ -657,10 +665,12 @@ class MainActivity : FlutterActivity() {
             return cacheResolvedResponse(sourceCacheKey, resolveKuaishouShare(url))
         }
         if (isDouyinUrl(url)) {
-            return cacheResolvedResponse(sourceCacheKey, resolveDouyinShare(url))
+            runCatching { resolveDouyinShare(url, douyinCookie) }
+                .getOrNull()
+                ?.let { return cacheResolvedResponse(sourceCacheKey, it) }
         }
         val response = try {
-            executeResolverRequest(url, bilibiliCookie)
+            executeResolverRequest(url, bilibiliCookie, douyinCookie)
         } catch (error: Throwable) {
             if (
                 !AndroidErrorFormatter.isOpaqueEngineFailure(error) ||
@@ -669,7 +679,7 @@ class MainActivity : FlutterActivity() {
                 throw error
             }
             runCatching { forceRefreshEngine() }
-            executeResolverRequest(url, bilibiliCookie)
+            executeResolverRequest(url, bilibiliCookie, douyinCookie)
         }
         val root = JSONObject(response.out.trim())
         val effective = effectiveEntry(root)
@@ -713,7 +723,13 @@ class MainActivity : FlutterActivity() {
             ?: text(root, "webpage_url")
             ?: url
         val title = text(effective, "title") ?: text(root, "title") ?: "未命名媒体"
-        resolved[mediaId] = LocalMedia(sourceUrl, title, specs, bilibiliCookie)
+        resolved[mediaId] = LocalMedia(
+            sourceUrl,
+            title,
+            specs,
+            bilibiliCookie,
+            douyinCookie,
+        )
         if (resolved.size > 80) resolved.keys.firstOrNull()?.let(resolved::remove)
 
         return cacheResolvedResponse(sourceCacheKey, mapOf(
@@ -735,6 +751,7 @@ class MainActivity : FlutterActivity() {
             "options" to options,
             "warnings" to listOfNotNull(
                 bilibiliCookie?.let { "已使用本机加密保存的B站登录会话请求最高画质。" },
+                douyinCookie?.let { "已使用本机加密保存的抖音登录会话。" },
                 "由 Android 本机解析，媒体链接不会发送到 langbai 服务器。",
             ),
         ))
@@ -743,9 +760,10 @@ class MainActivity : FlutterActivity() {
     private fun executeResolverRequest(
         url: String,
         bilibiliCookie: String?,
+        douyinCookie: String?,
     ) = engineLock.read {
         ensureEngine()
-        withBilibiliCookieFile(bilibiliCookie) { cookieFile ->
+        withResolverCookieFile(bilibiliCookie, douyinCookie) { cookieFile ->
             val request = YoutubeDLRequest(url)
                 .addOption("--dump-single-json")
                 .addOption("--no-playlist")
@@ -812,6 +830,34 @@ class MainActivity : FlutterActivity() {
         return pairs.joinToString("; ").takeIf { pairs.any { it.startsWith("SESSDATA=") } }
     }
 
+    private fun cleanDouyinCookie(value: String?, url: String): String? {
+        if (value.isNullOrBlank() || !isDouyinUrl(url) || '\r' in value || '\n' in value) {
+            return null
+        }
+        var total = 0
+        var authenticated = false
+        val pairs = value.split(';').mapNotNull { item ->
+            val name = item.substringBefore('=', "").trim()
+            val content = item.substringAfter('=', "").trim()
+            if (
+                !name.matches(Regex("[A-Za-z0-9_.-]{1,128}")) ||
+                content.isEmpty() ||
+                content.length > 4096 ||
+                '\r' in content ||
+                '\n' in content
+            ) {
+                return@mapNotNull null
+            }
+            val pair = "$name=$content"
+            val next = total + if (total == 0) pair.length else pair.length + 2
+            if (next > 8192) return@mapNotNull null
+            total = next
+            authenticated = authenticated || name in DOUYIN_AUTH_COOKIE_NAMES
+            pair
+        }
+        return pairs.joinToString("; ").takeIf { authenticated }
+    }
+
     private fun isBilibiliUrl(value: String): Boolean {
         val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
         return host == "b23.tv" || host == "bilibili.com" || host.endsWith(".bilibili.com")
@@ -837,10 +883,45 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun <T> withDouyinCookieFile(cookie: String?, action: (File?) -> T): T {
+        if (cookie.isNullOrBlank()) return action(null)
+        val file = File.createTempFile("langbai-douyin-", ".txt", cacheDir)
+        return try {
+            val expires = System.currentTimeMillis() / 1000 + 30L * 24 * 60 * 60
+            val lines = mutableListOf("# Netscape HTTP Cookie File")
+            cookie.split(';').forEach { item ->
+                val name = item.substringBefore('=', "").trim()
+                val value = item.substringAfter('=', "").trim()
+                if (name.matches(Regex("[A-Za-z0-9_.-]{1,128}")) && value.isNotEmpty()) {
+                    lines += ".douyin.com\tTRUE\t/\tTRUE\t$expires\t$name\t$value"
+                }
+            }
+            file.writeText(lines.joinToString("\n", postfix = "\n"), Charsets.UTF_8)
+            action(file)
+        } finally {
+            file.delete()
+        }
+    }
+
+    private fun <T> withResolverCookieFile(
+        bilibiliCookie: String?,
+        douyinCookie: String?,
+        action: (File?) -> T,
+    ): T = if (!douyinCookie.isNullOrBlank()) {
+        withDouyinCookieFile(douyinCookie, action)
+    } else {
+        withBilibiliCookieFile(bilibiliCookie, action)
+    }
+
     private fun isDouyinUrl(value: String): Boolean {
         val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
         return host == "douyin.com" || host.endsWith(".douyin.com") ||
             host == "iesdouyin.com" || host.endsWith(".iesdouyin.com")
+    }
+
+    private fun maySendDouyinCookie(value: String): Boolean {
+        val host = runCatching { Uri.parse(value).host.orEmpty().lowercase() }.getOrDefault("")
+        return host == "douyin.com" || host.endsWith(".douyin.com")
     }
 
     private fun isKuaishouUrl(value: String): Boolean {
@@ -1033,7 +1114,10 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
-    private fun resolveDouyinShare(sourceUrl: String): Map<String, Any?> {
+    private fun resolveDouyinShare(
+        sourceUrl: String,
+        douyinCookie: String? = null,
+    ): Map<String, Any?> {
         var videoId = douyinVideoId(sourceUrl)
         var current = sourceUrl
         repeat(5) {
@@ -1043,6 +1127,8 @@ class MainActivity : FlutterActivity() {
             connection.connectTimeout = 15_000
             connection.readTimeout = 20_000
             connection.setRequestProperty("User-Agent", DOUYIN_MOBILE_USER_AGENT)
+            douyinCookie?.takeIf { maySendDouyinCookie(current) }
+                ?.let { connection.setRequestProperty("Cookie", it) }
             connection.connect()
             val location = connection.getHeaderField("Location")
             val responseCode = connection.responseCode
@@ -1066,6 +1152,8 @@ class MainActivity : FlutterActivity() {
         connection.connectTimeout = 15_000
         connection.readTimeout = 25_000
         connection.setRequestProperty("User-Agent", DOUYIN_MOBILE_USER_AGENT)
+        douyinCookie?.takeIf { maySendDouyinCookie(shareUrl) }
+            ?.let { connection.setRequestProperty("Cookie", it) }
         connection.connect()
         require(connection.responseCode in 200..299) {
             "抖音匿名分享页返回 ${connection.responseCode}"
@@ -1171,7 +1259,12 @@ class MainActivity : FlutterActivity() {
         val mediaId = UUID.randomUUID().toString()
         val title = text(detail, "desc") ?: "抖音作品 $videoId"
         val author = detail.optJSONObject("author")
-        resolved[mediaId] = LocalMedia(sourceUrl, title, specs)
+        resolved[mediaId] = LocalMedia(
+            sourceUrl,
+            title,
+            specs,
+            douyinCookie = douyinCookie,
+        )
         return mapOf(
             "media_id" to mediaId,
             "source_url" to sourceUrl,
@@ -1182,7 +1275,11 @@ class MainActivity : FlutterActivity() {
             "thumbnail_url" to coverUrl,
             "options" to options,
             "warnings" to listOfNotNull(
-                "不读取或发送你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。",
+                if (douyinCookie != null) {
+                    "已使用本机加密保存的抖音登录会话。"
+                } else {
+                    "匿名分享页可能使用站点临时 Cookie。"
+                },
                 originalPlayUrl?.takeIf { it != playUrl && imageCount == 0 }?.let {
                     "无平台水印优先，失败时使用原站兼容源。"
                 },
@@ -1445,7 +1542,7 @@ class MainActivity : FlutterActivity() {
                 .addOption("--audio-quality", option.audioQuality ?: "0")
         }
         engineLock.read {
-            withBilibiliCookieFile(media.bilibiliCookie) { cookieFile ->
+            withResolverCookieFile(media.bilibiliCookie, media.douyinCookie) { cookieFile ->
                 cookieFile?.let { request.addOption("--cookies", it.absolutePath) }
                 YoutubeDL.getInstance().execute(request, processId) { progress, eta, line ->
                     val metrics = parseYtDlpProgress(line, progress.toDouble())
@@ -1968,7 +2065,7 @@ class MainActivity : FlutterActivity() {
             "sign in to confirm you’re not a bot" in lower ||
             "use --cookies-from-browser or --cookies" in lower
         ) {
-            return "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取 Cookie"
+            return "该作品需要抖音登录，请在 langbai解析内登录后重试"
         }
         if ("ip address is blocked" in lower) {
             return "当前网络出口被该平台限制，请切换网络后重试"
@@ -1987,6 +2084,7 @@ class MainActivity : FlutterActivity() {
         val title: String,
         val options: Map<String, LocalOption>,
         val bilibiliCookie: String? = null,
+        val douyinCookie: String? = null,
     )
 
     private data class CachedResolution(
@@ -2062,6 +2160,16 @@ class MainActivity : FlutterActivity() {
             "sid",
             "bili_ticket",
             "bili_ticket_expires",
+        )
+        private val DOUYIN_AUTH_COOKIE_NAMES = setOf(
+            "sessionid",
+            "sessionid_ss",
+            "sid_guard",
+            "sid_tt",
+            "uid_tt",
+            "uid_tt_ss",
+            "sid_ucp_v1",
+            "ssid_ucp_v1",
         )
         private val SAFE_HEADER_NAMES = setOf(
             "User-Agent",

@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:media_harbor/models/media_models.dart';
 import 'package:media_harbor/services/api_client.dart';
+import 'dart:convert';
 
 void main() {
   test('sends the local instance token on health and file downloads', () async {
@@ -73,6 +74,29 @@ void main() {
           contains('不会跟随跳转'),
         ),
       ),
+    );
+    client.close();
+  });
+
+  test('sends the device Douyin session only in the resolve body', () async {
+    final client = ApiClient(
+      'https://resolver.example.com',
+      client: MockClient((request) async {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['url'], 'https://v.douyin.com/example/');
+        expect(body['douyin_cookie'], 'sessionid_ss=device-session');
+        expect(request.headers['cookie'], isNull);
+        return http.Response(
+          '{"media_id":"media-12345678","source_url":"https://v.douyin.com/example/","title":"sample","platform":"Douyin","options":[]}',
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await client.resolve(
+      'https://v.douyin.com/example/',
+      douyinCookie: 'sessionid_ss=device-session',
     );
     client.close();
   });
