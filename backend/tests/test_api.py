@@ -10,11 +10,14 @@ from app.services.extractor import (
     ResolverService,
     SafeYoutubeDL,
     _clean_bilibili_cookie,
+    _clean_douyin_cookie,
+    _direct_headers,
     _select_douyin_play_urls,
     browser_cookies_required,
     clean_ytdlp_error,
     extract_http_url,
     temporary_bilibili_cookie_file,
+    temporary_douyin_cookie_file,
 )
 
 
@@ -162,11 +165,46 @@ def test_bilibili_cookie_is_scoped_and_written_for_ytdlp() -> None:
     assert not Path(cookie_file).exists()
 
 
+def test_douyin_cookie_is_scoped_and_written_for_ytdlp() -> None:
+    cleaned = _clean_douyin_cookie(
+        "sessionid_ss=device-session; ttwid=fresh-token; evil=ignored\r\nInjected=yes",
+        "https://www.douyin.com/video/7673718264442729097",
+    )
+    assert cleaned is None
+
+    cleaned = _clean_douyin_cookie(
+        "sessionid_ss=device-session; ttwid=fresh-token",
+        "https://v.douyin.com/3JL8zzI4Duw/",
+    )
+    assert cleaned == "sessionid_ss=device-session; ttwid=fresh-token"
+    assert _clean_douyin_cookie(cleaned, "https://example.com/video") is None
+    with temporary_douyin_cookie_file(cleaned) as cookie_file:
+        assert cookie_file is not None
+        contents = Path(cookie_file).read_text(encoding="utf-8")
+        assert "\tsessionid_ss\tdevice-session" in contents
+        assert "\tttwid\tfresh-token" in contents
+    assert not Path(cookie_file).exists()
+
+
+def test_douyin_cookie_is_only_attached_to_douyin_web_hosts() -> None:
+    cookie = "sessionid_ss=device-session"
+    source = "https://www.douyin.com/video/7673718264442729097"
+
+    assert _direct_headers({}, source, source, cookie) == {"Cookie": cookie}
+    assert _direct_headers(
+        {}, "https://www.iesdouyin.com/share/video/7673718264442729097", source, cookie
+    ) is None
+    assert _direct_headers(
+        {}, "https://v26-web.douyinvod.com/video/tos/example", source, cookie
+    ) is None
+    assert _direct_headers({}, "https://example.com/video.mp4", source, cookie) is None
+
+
 def test_update_manifest_has_all_primary_clients() -> None:
     response = client.get("/api/v1/update")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.1.8"
+    assert payload["version"] == "1.1.9"
     assert {"windows", "android", "ios", "web"}.issubset(payload["platforms"])
     assert "size_bytes" in payload["platforms"]["windows"]
     assert "signing_certificate_sha256" in payload["platforms"]["windows"]
@@ -243,7 +281,7 @@ def test_douyin_share_parser_does_not_send_cookies(monkeypatch) -> None:
     monkeypatch.setattr(
         ResolverService,
         "_fetch_douyin_page",
-        lambda _service, request_url: (request_url, html),
+        lambda _service, request_url, _cookie=None: (request_url, html),
     )
     entry = ResolverService(settings)._resolve_douyin_share(
         f"https://www.douyin.com/video/{video_id}"
@@ -254,7 +292,7 @@ def test_douyin_share_parser_does_not_send_cookies(monkeypatch) -> None:
     assert {option.kind.value for option in entry.media.options} == {"video", "image"}
     assert entry.media.options[0].resolution == "720p"
     assert entry.media.options[1].preview_url == "https://media.example/cover.webp"
-    assert "不读取或上传你的登录 Cookie" in entry.media.warnings[0]
+    assert "匿名分享页" in entry.media.warnings[0]
 
 
 def test_douyin_playwm_is_normalized_to_public_clean_endpoint() -> None:
@@ -316,7 +354,7 @@ def test_douyin_image_post_only_returns_real_images(monkeypatch) -> None:
     monkeypatch.setattr(
         ResolverService,
         "_fetch_douyin_page",
-        lambda _service, request_url: (request_url, html),
+        lambda _service, request_url, _cookie=None: (request_url, html),
     )
     entry = ResolverService(settings)._resolve_douyin_share(
         f"https://www.douyin.com/note/{video_id}"

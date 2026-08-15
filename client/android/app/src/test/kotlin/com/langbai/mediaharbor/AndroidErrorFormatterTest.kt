@@ -44,6 +44,18 @@ class AndroidErrorFormatterTest {
     }
 
     @Test
+    fun `Douyin cookie requirement opens the in-app login flow`() {
+        val error = IllegalStateException(
+            "ERROR: [Douyin] Fresh cookies (not necessarily logged in) are needed",
+        )
+
+        assertEquals(
+            "该作品需要抖音登录，请在 langbai解析内登录后重试",
+            AndroidErrorFormatter.format(error),
+        )
+    }
+
+    @Test
     fun `overlong filename gets a readable retry message`() {
         val error = IllegalStateException("open failed: ENAMETOOLONG (File name too long)")
 

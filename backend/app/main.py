@@ -54,7 +54,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="langbai解析 API",
-    version="1.1.8",
+    version="1.1.9",
     description="公开、无 DRM 媒体的统一解析与下载服务。",
     lifespan=lifespan,
 )
@@ -233,7 +233,11 @@ async def resolve_media(request: ResolveRequest) -> MediaInfo:
     try:
         async with asyncio.timeout(min(settings.job_timeout_seconds, 120)):
             async with analysis_slots:
-                return await resolver.resolve(request.url, request.bilibili_cookie)
+                return await resolver.resolve(
+                    request.url,
+                    request.bilibili_cookie,
+                    request.douyin_cookie,
+                )
     except TimeoutError as exc:
         raise HTTPException(status_code=504, detail="解析任务超时") from exc
     except UnsafeUrlError as exc:

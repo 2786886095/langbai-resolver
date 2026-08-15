@@ -40,7 +40,11 @@ internal object AndroidErrorFormatter {
             "sign in to confirm you're not a bot" in lower ||
             "use --cookies-from-browser or --cookies" in lower
         ) {
-            return "该平台当前要求登录验证；请登录对应平台后重试，或换一个公开链接"
+            return if ("douyin" in lower || "抖音" in lower) {
+                "该作品需要抖音登录，请在 langbai解析内登录后重试"
+            } else {
+                "该平台当前要求登录验证；请登录对应平台后重试，或换一个公开链接"
+            }
         }
         if ("ip address is blocked" in lower) {
             return "当前网络出口被该平台限制，请切换网络后重试"

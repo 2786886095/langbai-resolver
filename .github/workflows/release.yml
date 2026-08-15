@@ -89,6 +89,7 @@ jobs:
       - name: Install pinned packaging tools
         shell: pwsh
         run: |
+          choco install nuget.commandline --version=6.13.2 -y --no-progress
           choco install innosetup --version=6.7.1 -y --no-progress
           choco install ffmpeg --version=8.1.2 -y --no-progress
           choco install aria2 --version=1.37.0 -y --no-progress
@@ -300,7 +301,7 @@ jobs:
           python scripts/create_update_manifest.py
           --version "$RELEASE_VERSION"
           --repository "$GITHUB_REPOSITORY"
-          --notes "修复抖音等作品标题过长时 Android 报 ENAMETOOLONG 的问题；文件名保留标题前半部分并按 UTF-8 字节安全截断，同时保留扩展名与重复编号。"
+          --notes "修复抖音匿名解析受限时无法继续的问题；Windows、Android 和 iOS 支持应用内登录，登录会话仅加密保存在当前设备，并在解析失败后自动重试。"
           --assets release-assets
           --output release-assets/update-manifest.json
       - name: Publish GitHub Release

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -214,5 +215,27 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.textContaining('平台返回了很长的错误说明'), findsOneWidget);
+  });
+
+  testWidgets('Douyin session errors offer the in-app login fallback', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    mockResolver(error: '该作品需要抖音登录，请在 langbai解析内登录后重试');
+
+    await tester.pumpWidget(app());
+    await tester.enterText(
+      find.byType(TextField).first,
+      'https://v.douyin.com/3JL8zzI4Duw/',
+    );
+    await tester.ensureVisible(find.text('开始解析'));
+    await tester.tap(find.text('开始解析'));
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(find.text('该作品需要抖音会话'), findsOneWidget);
+    expect(find.text('去登录'), findsOneWidget);
+    expect(find.text('暂不登录'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
   });
 }

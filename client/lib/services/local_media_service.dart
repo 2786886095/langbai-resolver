@@ -257,7 +257,11 @@ class LocalMediaService {
     }
   }
 
-  Future<MediaInfo> resolve(String url, {String? bilibiliCookie}) async {
+  Future<MediaInfo> resolve(
+    String url, {
+    String? bilibiliCookie,
+    String? douyinCookie,
+  }) async {
     if (!isSupported) {
       throw const LocalMediaException('当前平台未启用本地解析器');
     }
@@ -265,6 +269,7 @@ class LocalMediaService {
       final raw = await _channel.invokeMethod<Object?>('resolve', {
         'url': url,
         'bilibili_cookie': ?bilibiliCookie,
+        'douyin_cookie': ?douyinCookie,
       });
       final json = _normalize(raw);
       if (json is! Map<String, dynamic>) {

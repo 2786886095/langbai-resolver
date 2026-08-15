@@ -54,6 +54,17 @@ _DOUYIN_PLAY_HOSTS = {"aweme.snssdk.com"}
 _DOUYIN_PLAYWM_PATH = "/aweme/v1/playwm/"
 _DOUYIN_PLAY_PATH = "/aweme/v1/play/"
 _DOUYIN_VIDEO_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{8,256}$")
+_SAFE_COOKIE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_DOUYIN_AUTH_COOKIE_NAMES = {
+    "sessionid",
+    "sessionid_ss",
+    "sid_guard",
+    "sid_tt",
+    "uid_tt",
+    "uid_tt_ss",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+}
 _KUAISHOU_HOSTS = {
     "kuaishou.com",
     "chenzhongtech.com",
@@ -120,6 +131,16 @@ def _is_bilibili_url(value: str) -> bool:
     return hostname in _BILIBILI_HOSTS or hostname.endswith(".bilibili.com")
 
 
+def _is_douyin_url(value: str) -> bool:
+    hostname = (urlparse(value).hostname or "").lower()
+    return hostname in _DOUYIN_HOSTS or hostname.endswith(".douyin.com")
+
+
+def _may_send_douyin_cookie(value: str) -> bool:
+    hostname = (urlparse(value).hostname or "").lower()
+    return hostname == "douyin.com" or hostname.endswith(".douyin.com")
+
+
 def _clean_bilibili_cookie(value: str | None, url: str) -> str | None:
     if not value or not _is_bilibili_url(url) or "\r" in value or "\n" in value:
         return None
@@ -133,6 +154,33 @@ def _clean_bilibili_cookie(value: str | None, url: str) -> str | None:
         if any(item.startswith("SESSDATA=") for item in pairs)
         else None
     )
+
+
+def _clean_douyin_cookie(value: str | None, url: str) -> str | None:
+    if not value or not _is_douyin_url(url) or "\r" in value or "\n" in value:
+        return None
+    pairs: list[str] = []
+    authenticated = False
+    total = 0
+    for item in value.split(";"):
+        name, separator, content = item.strip().partition("=")
+        if (
+            not separator
+            or not _SAFE_COOKIE_NAME_RE.fullmatch(name)
+            or not content
+            or len(content) > 4096
+            or "\r" in content
+            or "\n" in content
+        ):
+            continue
+        pair = f"{name}={content}"
+        next_total = total + (2 if pairs else 0) + len(pair)
+        if next_total > 8192:
+            continue
+        pairs.append(pair)
+        total = next_total
+        authenticated = authenticated or name in _DOUYIN_AUTH_COOKIE_NAMES
+    return "; ".join(pairs) if authenticated else None
 
 
 @contextlib.contextmanager
@@ -159,6 +207,30 @@ def temporary_bilibili_cookie_file(cookie_header: str | None):
             os.unlink(path)
 
 
+@contextlib.contextmanager
+def temporary_douyin_cookie_file(cookie_header: str | None):
+    if not cookie_header:
+        yield None
+        return
+    descriptor, path = tempfile.mkstemp(prefix="langbai-douyin-", suffix=".txt")
+    os.close(descriptor)
+    try:
+        expires = int(time.time()) + 30 * 24 * 60 * 60
+        lines = ["# Netscape HTTP Cookie File"]
+        for item in cookie_header.split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and _SAFE_COOKIE_NAME_RE.fullmatch(name) and value:
+                lines.append(
+                    f".douyin.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}"
+                )
+        with open(path, "w", encoding="utf-8", newline="\n") as output:
+            output.write("\n".join(lines) + "\n")
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 @dataclass(slots=True)
 class DownloadSpec:
     option: MediaOption
@@ -168,6 +240,7 @@ class DownloadSpec:
     preferred_codec: str | None = None
     preferred_quality: str | None = None
     cookie_header: str | None = None
+    cookie_site: str | None = None
     headers: dict[str, str] | None = None
 
 
@@ -283,7 +356,7 @@ def _direct_headers(
     raw_headers: object,
     media_url: str,
     source_url: str,
-    bilibili_cookie: str | None = None,
+    site_cookie: str | None = None,
 ) -> dict[str, str] | None:
     if not isinstance(raw_headers, dict):
         raw_headers = {}
@@ -305,10 +378,18 @@ def _direct_headers(
                 and "\n" not in str(value)
             ):
                 result[str(key)] = str(value)
-    if bilibili_cookie and (
-        target_host == "bilibili.com" or target_host.endswith(".bilibili.com")
-    ):
-        result["Cookie"] = bilibili_cookie
+    same_cookie_site = (
+        _is_bilibili_url(source_url)
+        and (target_host == "bilibili.com" or target_host.endswith(".bilibili.com"))
+    ) or (
+        _is_douyin_url(source_url)
+        and (
+            target_host == "douyin.com"
+            or target_host.endswith(".douyin.com")
+        )
+    )
+    if site_cookie and same_cookie_site:
+        result["Cookie"] = site_cookie
     return result or None
 
 
@@ -331,7 +412,10 @@ class ResolverService:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     async def resolve(
-        self, raw_url: str, bilibili_cookie: str | None = None
+        self,
+        raw_url: str,
+        bilibili_cookie: str | None = None,
+        douyin_cookie: str | None = None,
     ) -> MediaInfo:
         candidate = extract_http_url(raw_url)
         if not candidate:
@@ -339,7 +423,16 @@ class ResolverService:
         url = await self._blocking(
             validate_public_url, candidate, self._settings.allow_fake_ip_dns
         )
-        cookie_header = _clean_bilibili_cookie(bilibili_cookie, url)
+        bilibili_cookie_header = _clean_bilibili_cookie(bilibili_cookie, url)
+        douyin_cookie_header = _clean_douyin_cookie(douyin_cookie, url)
+        cookie_header = bilibili_cookie_header or douyin_cookie_header
+        cookie_site = (
+            "bilibili"
+            if bilibili_cookie_header
+            else "douyin"
+            if douyin_cookie_header
+            else None
+        )
         self._prune()
         source_cache_key = self._source_cache_key(url, cookie_header)
         cached_entry = self._get_by_source(source_cache_key)
@@ -366,21 +459,27 @@ class ResolverService:
                 return entry.media
         if self._is_douyin_url(url):
             try:
-                entry = await self._blocking(self._resolve_douyin_share, url)
+                entry = await self._blocking(
+                    self._resolve_douyin_share, url, douyin_cookie_header
+                )
             except (httpx.HTTPError, KeyError, TypeError, ValueError):
                 fallback_warnings.append("抖音专用解析器暂不可用，已尝试通用解析。")
             else:
                 self._store(entry, source_cache_key)
                 return entry.media
         try:
-            entry = await self._blocking(self._resolve_with_ytdlp, url, cookie_header)
+            entry = await self._blocking(
+                self._resolve_with_ytdlp, url, cookie_header, cookie_site
+            )
         except yt_dlp.utils.DownloadError as error:
             try:
                 entry = await self._blocking(self._resolve_open_graph, url, str(error))
             except yt_dlp.utils.DownloadError:
                 if browser_cookies_required(error):
                     raise yt_dlp.utils.DownloadError(
-                        "该平台当前没有可用的匿名公开解析入口；langbai解析不会读取登录 Cookie"
+                        "该作品需要抖音登录，请在 langbai解析内登录后重试"
+                        if self._is_douyin_url(url)
+                        else "该平台当前没有可用的匿名公开解析入口"
                     ) from error
                 raise
         entry.media.warnings[:0] = fallback_warnings
@@ -398,8 +497,7 @@ class ResolverService:
 
     @staticmethod
     def _is_douyin_url(url: str) -> bool:
-        hostname = (urlparse(url).hostname or "").lower()
-        return hostname in _DOUYIN_HOSTS or hostname.endswith(".douyin.com")
+        return _is_douyin_url(url)
 
     @staticmethod
     def _is_kuaishou_url(url: str) -> bool:
@@ -570,14 +668,23 @@ class ResolverService:
     def _douyin_content_kind(value: str) -> str:
         return "note" if re.search(r"/note/\d{10,}", value) else "video"
 
-    def _fetch_douyin_page(self, url: str) -> tuple[str, str]:
+    def _fetch_douyin_page(
+        self, url: str, cookie_header: str | None = None
+    ) -> tuple[str, str]:
         def validate_douyin_redirect(candidate: str) -> None:
             hostname = (urlparse(candidate).hostname or "").lower()
             if hostname not in _DOUYIN_HOSTS and not hostname.endswith(".douyin.com"):
                 raise ValueError("抖音短链接跳转到了未知站点")
 
         with httpx.Client(
-            headers={"User-Agent": _DOUYIN_MOBILE_USER_AGENT},
+            headers={
+                "User-Agent": _DOUYIN_MOBILE_USER_AGENT,
+                **(
+                    {"Cookie": cookie_header}
+                    if cookie_header and _may_send_douyin_cookie(url)
+                    else {}
+                ),
+            },
             timeout=20,
             follow_redirects=False,
             trust_env=False,
@@ -595,11 +702,13 @@ class ResolverService:
                 body = read_limited(response, self._settings.max_html_bytes)
                 return str(response.url), body.decode(encoding, errors="replace")
 
-    def _resolve_douyin_share(self, url: str) -> ResolvedEntry:
+    def _resolve_douyin_share(
+        self, url: str, cookie_header: str | None = None
+    ) -> ResolvedEntry:
         video_id = self._douyin_video_id(url)
         content_kind = self._douyin_content_kind(url)
         if not video_id:
-            final_url, landing_html = self._fetch_douyin_page(url)
+            final_url, landing_html = self._fetch_douyin_page(url, cookie_header)
             video_id = self._douyin_video_id(final_url)
             content_kind = self._douyin_content_kind(final_url)
             if not video_id:
@@ -611,7 +720,7 @@ class ResolverService:
             raise ValueError("无法从抖音链接识别作品 ID")
 
         share_url = f"https://www.iesdouyin.com/share/{content_kind}/{video_id}/"
-        _, share_html = self._fetch_douyin_page(share_url)
+        _, share_html = self._fetch_douyin_page(share_url, cookie_header)
         soup = BeautifulSoup(share_html, "html.parser")
         router_script = next(
             (
@@ -724,7 +833,9 @@ class ResolverService:
             thumbnail_url=cover_url,
             options=[spec.option for spec in specs.values()],
             warnings=[
-                "不读取或上传你的登录 Cookie；匿名分享页可能使用站点临时 Cookie。"
+                "已使用当前设备加密保存的抖音登录会话。"
+                if cookie_header
+                else "匿名分享页可能使用站点临时 Cookie。"
             ],
         )
         return ResolvedEntry(media=media, specs=specs, created_at=time.time())
@@ -821,9 +932,17 @@ class ResolverService:
         return options
 
     def _resolve_with_ytdlp(
-        self, url: str, cookie_header: str | None = None
+        self,
+        url: str,
+        cookie_header: str | None = None,
+        cookie_site: str | None = None,
     ) -> ResolvedEntry:
-        with temporary_bilibili_cookie_file(cookie_header) as cookie_file:
+        cookie_context = (
+            temporary_douyin_cookie_file(cookie_header)
+            if cookie_site == "douyin"
+            else temporary_bilibili_cookie_file(cookie_header)
+        )
+        with cookie_context as cookie_file:
             with SafeYoutubeDL(
                 self._base_ytdlp_options(cookie_file),
                 allow_fake_ip_dns=self._settings.allow_fake_ip_dns,
@@ -1119,7 +1238,13 @@ class ResolverService:
         if cookie_header:
             for spec in specs.values():
                 spec.cookie_header = cookie_header
-            warnings.insert(0, "已使用本机B站登录会话请求账号可见的最高画质。")
+                spec.cookie_site = cookie_site
+            warnings.insert(
+                0,
+                "已使用当前设备加密保存的抖音登录会话。"
+                if cookie_site == "douyin"
+                else "已使用本机B站登录会话请求账号可见的最高画质。",
+            )
 
         media = MediaInfo(
             media_id=media_id,

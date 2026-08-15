@@ -12,10 +12,12 @@ import '../services/api_client.dart';
 import '../services/api_endpoint_policy.dart';
 import '../services/bilibili_auth_service.dart';
 import '../services/download_saver.dart';
+import '../services/douyin_session_service.dart';
 import '../services/link_detector.dart';
 import '../services/local_media_service.dart';
 import '../services/service_credential_store.dart';
 import '../theme/langbai_theme.dart';
+import 'douyin_login_page.dart';
 
 const _defaultApiUrl = String.fromEnvironment(
   'API_BASE_URL',
@@ -64,6 +66,8 @@ class _ParserPageState extends State<ParserPage> {
   String? _error;
   BilibiliAccount? _bilibiliAccount;
   bool _bilibiliAuthBusy = false;
+  bool _douyinLoggedIn = false;
+  bool _douyinAuthBusy = false;
 
   bool get _usesLocalParser => LocalMediaService.isSupported;
   bool get _isMobile =>
@@ -72,6 +76,13 @@ class _ParserPageState extends State<ParserPage> {
           defaultTargetPlatform == TargetPlatform.iOS);
   bool get _bilibiliLoginAvailable {
     if (!BilibiliAuthService.isSupported) return false;
+    if (_usesLocalParser) return true;
+    final host = Uri.tryParse(_api.baseUrl)?.host.toLowerCase();
+    return host == '127.0.0.1' || host == 'localhost' || host == '::1';
+  }
+
+  bool get _douyinLoginAvailable {
+    if (!DouyinSessionService.isSupported) return false;
     if (_usesLocalParser) return true;
     final host = Uri.tryParse(_api.baseUrl)?.host.toLowerCase();
     return host == '127.0.0.1' || host == 'localhost' || host == '::1';
@@ -89,10 +100,21 @@ class _ParserPageState extends State<ParserPage> {
   Future<void> _initialize() async {
     await _restoreApiUrl();
     await _restoreBilibiliAccount();
+    await _restoreDouyinSession();
     final initialUrl = widget.initialUrl?.trim();
     if (!mounted || initialUrl == null || initialUrl.isEmpty) return;
     _urlController.text = initialUrl;
     await _resolve();
+  }
+
+  Future<void> _restoreDouyinSession() async {
+    if (!_douyinLoginAvailable) return;
+    try {
+      final loggedIn = await DouyinSessionService.instance.restore();
+      if (mounted) setState(() => _douyinLoggedIn = loggedIn);
+    } on Object {
+      // The parser remains usable anonymously when secure storage is unavailable.
+    }
   }
 
   Future<void> _restoreBilibiliAccount() async {
@@ -110,6 +132,86 @@ class _ParserPageState extends State<ParserPage> {
     return host == 'b23.tv' ||
         host == 'bilibili.com' ||
         host.endsWith('.bilibili.com');
+  }
+
+  bool _isDouyinUrl(String value) {
+    final host = Uri.tryParse(value)?.host.toLowerCase() ?? '';
+    return host == 'douyin.com' ||
+        host.endsWith('.douyin.com') ||
+        host == 'iesdouyin.com' ||
+        host.endsWith('.iesdouyin.com');
+  }
+
+  Future<bool> _requestDouyinLogin(String message) async {
+    if (!_douyinLoginAvailable || _douyinAuthBusy || !mounted) {
+      return false;
+    }
+    setState(() => _douyinAuthBusy = true);
+    try {
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.login_rounded),
+              SizedBox(width: 10),
+              Text('该作品需要抖音会话'),
+            ],
+          ),
+          content: Text(
+            '${_douyinLoggedIn ? '当前会话可能已过期，请重新进入登录页刷新。' : '匿名解析已被抖音限制，可以登录后自动重试。'}\n\n'
+            '会话只加密保存在当前设备，不读取浏览器 Cookie，也不会发送给非抖音域名。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('暂不登录'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(_douyinLoggedIn ? '刷新登录' : '去登录'),
+            ),
+          ],
+        ),
+      );
+      if (accepted != true || !mounted) return false;
+      final loggedIn = await Navigator.of(
+        context,
+      ).push<bool>(MaterialPageRoute(builder: (_) => const DouyinLoginPage()));
+      if (loggedIn == true && mounted) {
+        _resolutionCache.clear();
+        setState(() => _douyinLoggedIn = true);
+        return true;
+      }
+      return false;
+    } finally {
+      if (mounted) setState(() => _douyinAuthBusy = false);
+    }
+  }
+
+  Future<void> _logoutDouyin() async {
+    if (_douyinAuthBusy) return;
+    setState(() => _douyinAuthBusy = true);
+    try {
+      await DouyinSessionService.instance.logout();
+      _resolutionCache.clear();
+      if (LocalMediaService.isSupported) {
+        await LocalMediaService.instance.clearNativeSession();
+      }
+      if (!mounted) return;
+      setState(() {
+        _douyinLoggedIn = false;
+        _media = null;
+        _selected = null;
+        _job = null;
+        _error = null;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已退出并清除本机抖音会话')));
+    } finally {
+      if (mounted) setState(() => _douyinAuthBusy = false);
+    }
   }
 
   Future<void> _showBilibiliLogin() async {
@@ -219,29 +321,40 @@ class _ParserPageState extends State<ParserPage> {
       final bilibiliCookie = _bilibiliLoginAvailable && _isBilibiliUrl(url)
           ? BilibiliAuthService.instance.cookieHeader
           : null;
-      final cacheKey = [
-        _usesLocalParser ? 'local' : _api.baseUrl,
-        url,
-        bilibiliCookie?.hashCode ?? 0,
-      ].join('|');
-      final now = DateTime.now();
-      final cached = _resolutionCache[cacheKey];
-      final media = cached != null && cached.expiresAt.isAfter(now)
-          ? cached.media
-          : _usesLocalParser
-          ? await LocalMediaService.instance.resolve(
-              url,
-              bilibiliCookie: bilibiliCookie,
-            )
-          : await _api.resolve(url, bilibiliCookie: bilibiliCookie);
-      if (cached == null || !cached.expiresAt.isAfter(now)) {
-        _resolutionCache[cacheKey] = _CachedResolution(
-          media: media,
-          expiresAt: now.add(const Duration(seconds: 45)),
+      var douyinCookie = _douyinLoginAvailable && _isDouyinUrl(url)
+          ? DouyinSessionService.instance.cookieHeader
+          : null;
+      MediaInfo media;
+      try {
+        media = await _loadResolution(
+          url,
+          bilibiliCookie: bilibiliCookie,
+          douyinCookie: douyinCookie,
         );
-        while (_resolutionCache.length > 20) {
-          _resolutionCache.remove(_resolutionCache.keys.first);
+      } on ApiException catch (error) {
+        if (!_isDouyinUrl(url) ||
+            !isDouyinSessionRequiredError(error.message) ||
+            !await _requestDouyinLogin(error.message)) {
+          rethrow;
         }
+        douyinCookie = DouyinSessionService.instance.cookieHeader;
+        media = await _loadResolution(
+          url,
+          bilibiliCookie: bilibiliCookie,
+          douyinCookie: douyinCookie,
+        );
+      } on LocalMediaException catch (error) {
+        if (!_isDouyinUrl(url) ||
+            !isDouyinSessionRequiredError(error.message) ||
+            !await _requestDouyinLogin(error.message)) {
+          rethrow;
+        }
+        douyinCookie = DouyinSessionService.instance.cookieHeader;
+        media = await _loadResolution(
+          url,
+          bilibiliCookie: bilibiliCookie,
+          douyinCookie: douyinCookie,
+        );
       }
       if (!mounted) return;
       final availableKinds = media.availableKinds;
@@ -271,6 +384,41 @@ class _ParserPageState extends State<ParserPage> {
     } finally {
       if (mounted) setState(() => _resolving = false);
     }
+  }
+
+  Future<MediaInfo> _loadResolution(
+    String url, {
+    String? bilibiliCookie,
+    String? douyinCookie,
+  }) async {
+    final cacheKey = [
+      _usesLocalParser ? 'local' : _api.baseUrl,
+      url,
+      bilibiliCookie?.hashCode ?? 0,
+      douyinCookie?.hashCode ?? 0,
+    ].join('|');
+    final now = DateTime.now();
+    final cached = _resolutionCache[cacheKey];
+    if (cached != null && cached.expiresAt.isAfter(now)) return cached.media;
+    final media = _usesLocalParser
+        ? await LocalMediaService.instance.resolve(
+            url,
+            bilibiliCookie: bilibiliCookie,
+            douyinCookie: douyinCookie,
+          )
+        : await _api.resolve(
+            url,
+            bilibiliCookie: bilibiliCookie,
+            douyinCookie: douyinCookie,
+          );
+    _resolutionCache[cacheKey] = _CachedResolution(
+      media: media,
+      expiresAt: now.add(const Duration(seconds: 45)),
+    );
+    while (_resolutionCache.length > 20) {
+      _resolutionCache.remove(_resolutionCache.keys.first);
+    }
+    return media;
   }
 
   Future<void> _startDownload() async {
@@ -797,6 +945,10 @@ class _ParserPageState extends State<ParserPage> {
               _buildBilibiliAccountCard(context),
               const SizedBox(height: 18),
             ],
+            if (_douyinLoggedIn) ...[
+              _buildDouyinAccountCard(context),
+              const SizedBox(height: 18),
+            ],
             LayoutBuilder(
               builder: (context, constraints) {
                 final narrow = constraints.maxWidth < 680;
@@ -935,6 +1087,55 @@ class _ParserPageState extends State<ParserPage> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildDouyinAccountCard(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: context.palette.surfaceRaised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: context.palette.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: const Color.fromRGBO(37, 244, 238, .12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.music_note_rounded),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '抖音会话已启用',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '匿名解析受限时自动使用，仅加密保存在本机',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: context.palette.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: _douyinAuthBusy ? null : _logoutDouyin,
+            child: const Text('退出'),
+          ),
+        ],
       ),
     );
   }

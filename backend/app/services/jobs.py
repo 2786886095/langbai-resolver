@@ -35,6 +35,7 @@ from app.services.extractor import (
     ResolverService,
     SafeYoutubeDL,
     temporary_bilibili_cookie_file,
+    temporary_douyin_cookie_file,
 )
 from app.services.security import (
     UnsafeUrlError,
@@ -434,7 +435,12 @@ def _run_ytdlp_worker(
 
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
-        with temporary_bilibili_cookie_file(spec.cookie_header) as cookie_file:
+        cookie_context = (
+            temporary_douyin_cookie_file(spec.cookie_header)
+            if spec.cookie_site == "douyin"
+            else temporary_bilibili_cookie_file(spec.cookie_header)
+        )
+        with cookie_context as cookie_file:
             if cookie_file:
                 options["cookiefile"] = cookie_file
             with SafeYoutubeDL(
